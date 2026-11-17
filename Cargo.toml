@@ -1,13 +1,26 @@
 [package]
 name = "unpack"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+description = "압축 해제 프로그램 (CLI + GUI)"
+license = "MIT"
+
+[[bin]]
+name = "unpack"
+path = "src/main.rs"
+
+[[bin]]
+name = "unpack-gui"
+path = "src/bin/gui.rs"
+required-features = ["gui"]
 
 [dependencies]
 anyhow = "1.0.104"
 bzip2 = "0.6.1"
 clap = { version = "4.6.8", features = ["derive"] }
+eframe = { version = "0.37.0", optional = true }
 flate2 = "1.1.11"
+rfd = { version = "0.18.0", optional = true }
 sevenz-rust2 = "0.25.0"
 tar = "0.4.46"
 xz2 = "0.1.7"
@@ -23,3 +36,17 @@ tempfile = "3.27.0"
 xz2 = "0.1.7"
 zip = "9.7.0"
 zstd = "0.14.4"
+
+[features]
+default = []
+# Windows/데스크톱 GUI 앱 (unpack-gui)
+gui = ["dep:eframe", "dep:rfd"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+codegen-units = 1
+
+[build-dependencies]
+winresource = "0.1.34"

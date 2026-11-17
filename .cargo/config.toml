@@ -1,0 +1,4 @@
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+# MinGW 런타임 DLL 없이 단독 실행되도록 정적 링크
+rustflags = ["-C", "target-feature=+crt-static"]

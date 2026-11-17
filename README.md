@@ -1,6 +1,40 @@
-# unpack — Rust 압축 해제 프로그램
+# Unpack — Rust 압축 해제 프로그램
 
-여러 압축 형식을 하나의 명령으로 안전하게 해제하는 CLI 도구입니다.
+여러 압축 형식을 안전하게 해제하는 프로그램입니다. **Windows GUI 앱(설치 프로그램 제공)**과 명령줄 도구(CLI)를 함께 제공합니다.
+
+## Windows 설치
+
+1. [Actions](../../actions) 의 최신 "Windows 설치 파일" 실행 결과에서 `UnpackSetup` 아티팩트를 받거나,
+   [Releases](../../releases) 에서 `UnpackSetup-<버전>-x64.exe` 를 받습니다.
+2. 설치 파일을 실행합니다 (관리자 권한 필요, 64비트 Windows 10/11).
+3. 설치 시 선택할 수 있는 항목
+   - 시작 메뉴 바로가기 (기본)
+   - 탐색기 우클릭 메뉴 **"Unpack으로 압축 풀기"** (Windows 11은 "추가 옵션 표시" 안)
+   - 바탕화면 바로가기
+4. 제거: Windows 설정 → 앱 → Unpack 제거
+
+> 서명되지 않은 실행 파일이므로 처음 실행 시 SmartScreen 경고가 나올 수 있습니다. "추가 정보 → 실행"을 누르세요.
+
+### GUI 사용법
+
+- 압축 파일을 창에 **끌어다 놓거나** "파일 추가…" 버튼으로 선택
+- 출력 위치(압축 파일과 같은 위치 / 지정 폴더), 암호, 덮어쓰기 옵션 지정
+- **압축 풀기** 클릭 → 각 파일마다 이름이 같은 폴더에 해제
+- "내용" 버튼으로 풀기 전에 목록 확인
+
+### 설치 파일 직접 빌드 (Linux)
+
+```bash
+rustup target add x86_64-pc-windows-gnu
+sudo apt-get install -y mingw-w64 nsis
+./build-windows.sh   # → dist/UnpackSetup-<버전>-x64.exe
+```
+
+`v*` 태그를 푸시하면 GitHub Actions가 설치 파일을 빌드해 Release에 자동 첨부합니다.
+
+---
+
+## 명령줄 도구 (CLI)
 
 ## 지원 형식
 
@@ -17,10 +51,9 @@
 ## 빌드
 
 ```bash
-cargo build --release
+cargo build --release                 # CLI: target/release/unpack
+cargo build --release --features gui  # GUI: target/release/unpack-gui
 ```
-
-실행 파일: `target/release/unpack`
 
 ## 사용법
 

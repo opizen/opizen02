@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use unpack::{Options, detect, extract, list};
+use unpack::{Options, detect, extract, extract_into, list};
 
 /// 압축 해제 프로그램 — zip, 7z, tar, tar.gz, tar.bz2, tar.xz, tar.zst, gz, bz2, xz, zst 지원
 #[derive(Parser, Debug)]
@@ -39,10 +39,6 @@ fn main() -> ExitCode {
     let mut failed = 0;
 
     for archive in &cli.archives {
-        // 여러 파일을 같은 출력 폴더로 풀 때는 각자 하위 폴더로 분리
-        let dest = cli.output.as_ref().map(|o| {
-            if many { o.join(unpack::base_name(archive)) } else { o.clone() }
-        });
 
         let result = if cli.list {
             list(archive, &opts).map(|entries| {
@@ -57,7 +53,15 @@ fn main() -> ExitCode {
                 }
             })
         } else {
-            extract(archive, dest.as_deref(), &opts).map(|s| {
+            // 여러 파일을 같은 출력 폴더로 풀 때는 각자 하위 폴더로 분리
+            let result = match &cli.output {
+                Some(o) if many => extract_into(archive, o, &opts),
+                o => extract(archive, o.as_deref(), &opts),
+            };
+            result.map(|s| {
+                for w in &s.warnings {
+                    eprintln!("경고: {w}");
+                }
                 println!(
                     "완료: {} → {} (파일 {}개, 폴더 {}개, {} 바이트{})",
                     archive.display(),

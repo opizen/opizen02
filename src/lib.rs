@@ -67,6 +67,8 @@ pub struct Stats {
     pub dirs: usize,
     pub skipped: usize,
     pub bytes: u64,
+    /// 건너뛴 항목 등에 대한 경고 메시지
+    pub warnings: Vec<String>,
     /// 실제로 사용된 출력 경로
     pub output: PathBuf,
 }
@@ -232,9 +234,13 @@ impl<'a> Sink<'a> {
         })
     }
 
-    fn warn_unsafe(&mut self, name: &str) {
-        eprintln!("경고: 안전하지 않은 경로를 건너뜀: {name}");
+    fn warn(&mut self, msg: String) {
+        self.stats.warnings.push(msg);
         self.stats.skipped += 1;
+    }
+
+    fn warn_unsafe(&mut self, name: &str) {
+        self.warn(format!("안전하지 않은 경로를 건너뜀: {name}"));
     }
 
     fn dir(&mut self, rel: &Path) -> Result<()> {
@@ -253,8 +259,7 @@ impl<'a> Sink<'a> {
         let path = self.root.join(rel);
         if let Ok(meta) = fs::symlink_metadata(&path) {
             if !self.opts.overwrite {
-                eprintln!("건너뜀 (이미 존재, --overwrite 사용 시 덮어씀): {}", rel.display());
-                self.stats.skipped += 1;
+                self.warn(format!("이미 존재하여 건너뜀: {}", rel.display()));
                 return Ok(Prepared::Skip);
             }
             if meta.is_dir() && !meta.file_type().is_symlink() {
@@ -291,8 +296,7 @@ impl<'a> Sink<'a> {
 
     fn symlink(&mut self, rel: &Path, target: &str) -> Result<()> {
         if !symlink_target_is_safe(rel, target) {
-            eprintln!("경고: 폴더 밖을 가리키는 심볼릭 링크를 건너뜀: {} -> {target}", rel.display());
-            self.stats.skipped += 1;
+            self.warn(format!("폴더 밖을 가리키는 심볼릭 링크를 건너뜀: {} -> {target}", rel.display()));
             return Ok(());
         }
         let Prepared::Write(path) = self.prepare(rel)? else {
@@ -355,8 +359,18 @@ pub fn base_name(path: &Path) -> String {
 /// `dest`가 `None`이면 압축 파일 옆에 기본 이름으로 폴더를 만듭니다
 /// (단일 파일 스트림은 압축 파일과 같은 폴더에 풉니다).
 pub fn extract(archive: &Path, dest: Option<&Path>, opts: &Options) -> Result<Stats> {
-    let format = detect(archive)?;
     let parent = archive.parent().map(Path::to_path_buf).unwrap_or_default();
+    extract_impl(archive, dest, parent, opts)
+}
+
+/// `parent` 폴더 안에 압축 파일 이름으로 된 폴더를 만들어 해제합니다
+/// (단일 파일 스트림은 `parent` 바로 아래에 파일을 만듭니다).
+pub fn extract_into(archive: &Path, parent: &Path, opts: &Options) -> Result<Stats> {
+    extract_impl(archive, None, parent.to_path_buf(), opts)
+}
+
+fn extract_impl(archive: &Path, dest: Option<&Path>, parent: PathBuf, opts: &Options) -> Result<Stats> {
+    let format = detect(archive)?;
     let default_dir = || parent.join(base_name(archive));
 
     match format {
