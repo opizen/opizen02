@@ -39,13 +39,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 도구 설치
-        # 패키지 서버가 멈추면 오래 기다리지 않고 실패하도록 (다시 실행하면 대개 해결)
-        timeout-minutes: 10
+        # GitHub 러너의 패키지 미러가 응답하지 않는 일이 있어, 멈추면 공식 서버로 바꿔 다시 시도
+        timeout-minutes: 20
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
+          APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=30"
+          for i in 1 2 3; do
+            if timeout 180 sudo apt-get $APT update; then break; fi
+            echo "패키지 서버 응답 없음 → archive.ubuntu.com 으로 바꿔 다시 시도 ($i)"
+            sudo sed -i 's#http://azure.archive.ubuntu.com/ubuntu/\?#http://archive.ubuntu.com/ubuntu/#g' \
+              /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          done
+          timeout 600 sudo apt-get $APT install -y --no-install-recommends \
             gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 nsis
           rustup update stable
           rustup default stable
