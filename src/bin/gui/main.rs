@@ -16,9 +16,11 @@
 mod browse;
 mod gather;
 mod home;
+mod icons;
 mod pack;
 mod quick;
 mod style;
+mod table;
 
 use eframe::egui;
 use std::path::{Path, PathBuf};
@@ -101,8 +103,8 @@ fn main() -> eframe::Result {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(unpack::APP_NAME)
-        .with_inner_size([620.0, 520.0])
-        .with_min_inner_size([460.0, 400.0])
+        .with_inner_size([820.0, 560.0])
+        .with_min_inner_size([560.0, 400.0])
         .with_drag_and_drop(true);
     if let Some(icon) = icon {
         viewport = viewport.with_icon(icon);
@@ -122,6 +124,12 @@ fn main() -> eframe::Result {
 fn setup(ctx: &egui::Context) {
     install_fonts(ctx);
     style::apply(ctx);
+    // 기본은 운영체제 설정을 따름. OPIZEN_THEME=light|dark 로 강제할 수 있음
+    match std::env::var("OPIZEN_THEME").as_deref() {
+        Ok("light") => ctx.set_theme(egui::Theme::Light),
+        Ok("dark") => ctx.set_theme(egui::Theme::Dark),
+        _ => ctx.set_theme(egui::ThemePreference::System),
+    }
 }
 
 /// Windows의 맑은 고딕 등 한글 글꼴을 우선 사용합니다.

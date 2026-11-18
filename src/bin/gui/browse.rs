@@ -1,7 +1,9 @@
 //! 압축 파일 내용 보기 — 창 전체에 폴더 구조로 보여 줍니다.
 
-use crate::style::{ACCENT, ERR, WARN};
-use eframe::egui::{self, RichText};
+use crate::icons::{self, Icon};
+use crate::style::ACCENT;
+use crate::table::{self, Col};
+use eframe::egui;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use unpack::{EntryInfo, Options, detect, is_password_error, list};
@@ -59,13 +61,15 @@ pub struct ArchiveView {
     cur: Vec<String>,
     /// 암호 칸에 한 번만 포커스 주기
     focus_password: bool,
+    selected: Option<String>,
+    sort: table::Sort,
 }
 
 impl ArchiveView {
     pub fn open(idx: usize, path: &Path, password: Option<String>) -> Self {
         let format = detect(path).map(|f| f.to_string().to_uppercase()).unwrap_or_default();
         let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        let mut v = Self { idx, path: path.to_path_buf(), format, file_size, contents: Contents::Ok(Vec::new()), cur: Vec::new(), focus_password: false };
+        let mut v = Self { idx, path: path.to_path_buf(), format, file_size, contents: Contents::Ok(Vec::new()), cur: Vec::new(), focus_password: false, selected: None, sort: (0, true) };
         v.reload(password);
         v
     }
@@ -86,65 +90,86 @@ impl ArchiveView {
         crate::file_name(&self.path)
     }
 
-    /// 머리글: 이름, 형식·항목 수·크기, 현재 위치
-    pub fn header_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.heading(self.title());
-        });
-        let mut info = format!("{} · {}", self.format, crate::human_size(self.file_size));
-        if let Contents::Ok(e) = &self.contents {
-            let files = e.iter().filter(|x| !x.is_dir).count();
-            let total: u64 = e.iter().map(|x| x.size).sum();
-            info = format!("{} · 파일 {}개 · 풀면 {} · 압축 파일 {}", self.format, files, crate::human_size(total), crate::human_size(self.file_size));
-        }
-        ui.weak(info);
-        ui.add_space(4.0);
-
-        // 경로: 최상위 › a › b
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let mut go = None;
-            if self.cur.is_empty() {
-                ui.strong("최상위");
-            } else if ui.link("최상위").clicked() {
-                go = Some(0);
-            }
-            for (i, seg) in self.cur.iter().enumerate() {
-                ui.weak("›");
-                if i + 1 == self.cur.len() {
-                    ui.strong(seg);
-                } else if ui.link(seg).clicked() {
-                    go = Some(i + 1);
-                }
-            }
-            if let Some(n) = go {
-                self.cur.truncate(n);
-            }
-        });
-        ui.separator();
+    pub fn at_root(&self) -> bool {
+        self.cur.is_empty()
     }
 
-    /// 목록. 암호가 필요하면 `password` 입력 칸을 보여 주고, 다시 열면 `true`.
-    pub fn list_ui(&mut self, ui: &mut egui::Ui, password: &mut String) -> bool {
+    pub fn go_up(&mut self) {
+        self.cur.pop();
+        self.selected = None;
+    }
+
+    /// 상태 표시줄 문구
+    pub fn status(&self) -> String {
+        match &self.contents {
+            Contents::Ok(e) => {
+                let files = e.iter().filter(|x| !x.is_dir).count();
+                let total: u64 = e.iter().map(|x| x.size).sum();
+                format!(
+                    "{} · 파일 {}개 · 풀면 {} · 압축 파일 {}",
+                    self.format,
+                    files,
+                    crate::human_size(total),
+                    crate::human_size(self.file_size)
+                )
+            }
+            _ => format!("{} · {}", self.format, crate::human_size(self.file_size)),
+        }
+    }
+
+    /// 주소 줄: [압축파일] › 폴더 › 폴더
+    pub fn crumbs_ui(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let (r, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+        icons::paint(ui.painter(), r, Icon::Archive, ACCENT);
+        let mut go = None;
+        let root = self.title();
+        if self.cur.is_empty() {
+            ui.strong(root);
+        } else if ui.add(egui::Button::new(root).frame(false)).clicked() {
+            go = Some(0);
+        }
+        for (i, seg) in self.cur.iter().enumerate() {
+            ui.weak(" › ");
+            if i + 1 == self.cur.len() {
+                ui.strong(seg);
+            } else if ui.add(egui::Button::new(seg.as_str()).frame(false)).clicked() {
+                go = Some(i + 1);
+            }
+        }
+        if let Some(n) = go {
+            self.cur.truncate(n);
+            self.selected = None;
+        }
+    }
+
+    /// 내용 표. 암호가 필요하면 입력 화면을 보여 주고, 다시 열어야 하면 `true`.
+    pub fn table_ui(&mut self, ui: &mut egui::Ui, password: &mut String) -> bool {
         let mut retry = false;
         match &self.contents {
             Contents::Failed(e) => {
-                ui.colored_label(ERR, "내용을 읽을 수 없습니다");
-                ui.weak(e);
+                let rect = ui.available_rect_before_wrap();
+                table::empty_state(ui, rect, Icon::File, "내용을 읽을 수 없습니다", e);
             }
             Contents::NeedPassword { wrong } => {
-                ui.add_space(20.0);
+                let wrong = *wrong;
+                let rect = ui.available_rect_before_wrap();
+                let top = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), rect.height() * 0.62));
+                table::empty_state(
+                    ui,
+                    top,
+                    Icon::Lock,
+                    "암호가 걸린 압축 파일입니다",
+                    if wrong { "암호가 올바르지 않습니다. 다시 입력하세요." } else { "암호를 입력하면 내용을 볼 수 있습니다" },
+                );
+                ui.add_space(top.height() - 10.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("🔒 암호가 걸린 압축 파일입니다").size(17.0));
-                    if *wrong {
-                        ui.colored_label(WARN, "암호가 올바르지 않습니다");
-                    }
-                    ui.add_space(6.0);
-                    let r = ui.add(egui::TextEdit::singleline(password).password(true).hint_text("암호").desired_width(220.0));
+                    let r = ui.add(egui::TextEdit::singleline(password).password(true).hint_text("암호").desired_width(240.0));
                     if std::mem::take(&mut self.focus_password) {
                         r.request_focus();
                     }
                     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.add_space(4.0);
                     if (ui.add_enabled(!password.is_empty(), crate::style::primary("열기")).clicked() || enter)
                         && !password.is_empty()
                     {
@@ -153,32 +178,61 @@ impl ArchiveView {
                 });
             }
             Contents::Ok(entries) => {
-                let nodes = children(entries, &self.cur);
+                let mut nodes = children(entries, &self.cur);
+                sort_nodes(&mut nodes, self.sort);
+                let cols = [
+                    Col { title: "이름", width: 0.0, right: false },
+                    Col { title: "크기", width: 110.0, right: true },
+                    Col { title: "종류", width: 120.0, right: false },
+                ];
+                table::header(ui, &cols, &mut self.sort);
                 let mut enter = None;
                 let mut up = false;
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    if !self.cur.is_empty() && row(ui, "⬆", "..", "", true).clicked() {
-                        up = true;
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    if !self.cur.is_empty() {
+                        let r = table::row(ui, &cols, Icon::Up, &[("상위 폴더".into(), Some(ACCENT))], false, 0);
+                        if r.double_clicked() || r.clicked() {
+                            up = true;
+                        }
                     }
-                    if nodes.is_empty() {
-                        ui.weak("비어 있습니다");
-                    }
-                    for n in &nodes {
-                        let (icon, right) = if n.is_dir {
-                            ("📁", format!("파일 {}개 · {}", n.files, crate::human_size(n.size)))
+                    for (i, n) in nodes.iter().enumerate() {
+                        let (icon, size, kind) = if n.is_dir {
+                            (Icon::Folder, crate::human_size(n.size), format!("폴더 · {}개", n.files))
                         } else {
-                            ("📄", crate::human_size(n.size))
+                            (Icon::File, crate::human_size(n.size), kind_of(&n.name))
                         };
-                        if row(ui, icon, &n.name, &right, n.is_dir).clicked() && n.is_dir {
+                        let sel = self.selected.as_deref() == Some(n.name.as_str());
+                        let r = table::row(ui, &cols, icon, &[(n.name.clone(), None), (size, None), (kind, None)], sel, i + usize::from(!self.cur.is_empty()));
+                        if r.clicked() {
+                            self.selected = Some(n.name.clone());
+                        }
+                        if r.double_clicked() && n.is_dir {
                             enter = Some(n.name.clone());
                         }
                     }
+                    if nodes.is_empty() {
+                        ui.add_space(20.0);
+                        ui.vertical_centered(|ui| ui.weak("비어 있는 폴더입니다"));
+                    }
                 });
+                // 키보드: Backspace 위로, Enter 선택한 폴더 열기
+                let (back, open) = ui.input(|i| (i.key_pressed(egui::Key::Backspace), i.key_pressed(egui::Key::Enter)));
+                if back && !self.cur.is_empty() {
+                    up = true;
+                }
+                if open
+                    && let Some(sel) = &self.selected
+                    && nodes.iter().any(|n| &n.name == sel && n.is_dir)
+                {
+                    enter = Some(sel.clone());
+                }
                 if up {
-                    self.cur.pop();
+                    self.go_up();
                 }
                 if let Some(d) = enter {
                     self.cur.push(d);
+                    self.selected = None;
                 }
             }
         }
@@ -186,21 +240,24 @@ impl ArchiveView {
     }
 }
 
-/// 한 줄: 아이콘, 이름, 오른쪽 정보. 폴더 줄은 클릭할 수 있음.
-fn row(ui: &mut egui::Ui, icon: &str, name: &str, right: &str, clickable: bool) -> egui::Response {
-    let h = 30.0;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
-    if clickable && resp.hovered() {
-        ui.painter().rect_filled(rect, 6.0, ui.visuals().widgets.hovered.weak_bg_fill);
+fn sort_nodes(nodes: &mut [Node], (col, asc): table::Sort) {
+    nodes.sort_by(|a, b| {
+        let dirs = b.is_dir.cmp(&a.is_dir); // 폴더는 항상 위
+        let ord = match col {
+            1 => a.size.cmp(&b.size),
+            2 => kind_of(&a.name).cmp(&kind_of(&b.name)),
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        };
+        dirs.then(if asc { ord } else { ord.reverse() })
+    });
+}
+
+/// 확장자로 보여 줄 종류 이름
+pub fn kind_of(name: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((_, ext)) if !ext.is_empty() && ext.len() <= 6 => format!("{} 파일", ext.to_uppercase()),
+        _ => "파일".into(),
     }
-    let text = ui.visuals().text_color();
-    let weak = ui.visuals().weak_text_color();
-    let y = rect.center().y;
-    let p = ui.painter();
-    p.text(egui::pos2(rect.left() + 6.0, y), egui::Align2::LEFT_CENTER, icon, egui::FontId::proportional(15.0), if clickable { ACCENT } else { weak });
-    p.text(egui::pos2(rect.left() + 32.0, y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(15.0), text);
-    p.text(egui::pos2(rect.right() - 6.0, y), egui::Align2::RIGHT_CENTER, right, egui::FontId::proportional(13.0), weak);
-    if clickable { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
 
 #[cfg(test)]
