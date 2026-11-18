@@ -26,6 +26,18 @@ pub enum Icon {
     Check,
     /// 왼쪽 바로가기 목록 보이기/숨기기
     Sidebar,
+    /// 검색 (돋보기)
+    Search,
+    /// 목록 보기
+    List,
+    /// 아이콘 보기
+    Grid,
+    /// 미리보기 창 (오른쪽 칸)
+    Preview,
+    /// 더하기 (새 탭)
+    Plus,
+    /// 되돌리기
+    Undo,
 }
 
 /// 폴더 아이콘 색 (파일 관리자에서 흔히 쓰는 노란색)
@@ -156,6 +168,44 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.rect_stroke(r, 2.0 * u, line, egui::StrokeKind::Middle);
             p.rect_filled(Rect::from_min_max(at(3.0, 4.0), at(9.0, 20.0)), 2.0 * u, color.gamma_multiply(0.35));
             p.line_segment([at(9.0, 4.0), at(9.0, 20.0)], line);
+        }
+        Icon::Search => {
+            p.circle_stroke(at(10.5, 10.5), 6.0 * u, line);
+            p.line_segment([at(15.0, 15.0), at(20.5, 20.5)], Stroke::new(line.width * 1.3, color));
+        }
+        Icon::List => {
+            for y in [6.0, 12.0, 18.0] {
+                p.circle_filled(at(5.0, y), 1.3 * u, color);
+                p.line_segment([at(9.0, y), at(20.0, y)], line);
+            }
+        }
+        Icon::Grid => {
+            for (x, y) in [(4.0, 4.0), (13.5, 4.0), (4.0, 13.5), (13.5, 13.5)] {
+                let r = Rect::from_min_max(at(x, y), at(x + 6.5, y + 6.5));
+                p.rect_filled(r, 1.5 * u, color.gamma_multiply(0.2));
+                p.rect_stroke(r, 1.5 * u, line, egui::StrokeKind::Middle);
+            }
+        }
+        Icon::Preview => {
+            let r = Rect::from_min_max(at(3.0, 4.0), at(21.0, 20.0));
+            p.rect_stroke(r, 2.0 * u, line, egui::StrokeKind::Middle);
+            p.rect_filled(Rect::from_min_max(at(14.0, 4.0), at(21.0, 20.0)), 2.0 * u, color.gamma_multiply(0.35));
+            p.line_segment([at(14.0, 4.0), at(14.0, 20.0)], line);
+        }
+        Icon::Plus => {
+            p.line_segment([at(12.0, 5.0), at(12.0, 19.0)], line);
+            p.line_segment([at(5.0, 12.0), at(19.0, 12.0)], line);
+        }
+        Icon::Undo => {
+            let pts: Vec<_> = (0..=12)
+                .map(|i| {
+                    let a = std::f32::consts::PI * (1.0 + i as f32 / 12.0 * 1.15);
+                    at(12.5 + 6.5 * a.cos(), 13.0 + 6.5 * a.sin())
+                })
+                .collect();
+            let start = pts[0];
+            p.add(Shape::line(pts, line));
+            p.add(Shape::line(vec![start + egui::vec2(-2.5 * u, -4.0 * u), start, start + egui::vec2(3.5 * u, -2.0 * u)], line));
         }
         Icon::NewFolder => {
             folder(p, &at, u, false, line);

@@ -70,6 +70,10 @@ pub enum ViewAction {
     ExtractSelected { choose: bool },
     /// 최상위에서 뒤로 → 압축 파일 밖(폴더)으로
     Exit,
+    /// 고른 항목을 압축 파일에서 지우기 (압축 파일 안 전체 경로들)
+    Delete(Vec<String>),
+    /// 파일을 골라 지금 보는 폴더에 넣기
+    AddFiles,
 }
 
 pub struct ArchiveView {
@@ -108,6 +112,7 @@ impl ArchiveView {
 
     pub fn reload(&mut self, password: Option<String>) {
         let wrong = password.is_some();
+        self.file_size = unpack::archive_parts(&self.path).iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
         self.contents = match list(&self.path, &Options { password, ..Default::default() }) {
             Ok(e) => Contents::Ok(e),
             Err(e) if is_password_error(&e) => {
@@ -129,6 +134,31 @@ impl ArchiveView {
     pub fn go_up(&mut self) {
         self.cur.pop();
         self.clear_selection();
+    }
+
+    /// 지금 보는 압축 파일 안 폴더 (`a/b`, 맨 위면 빈 글자)
+    pub fn prefix(&self) -> String {
+        self.cur.join("/")
+    }
+
+    /// 압축 파일 안 경로로 가서 그 항목을 선택 (검색 결과에서 열 때)
+    pub fn reveal(&mut self, inner: &str) {
+        let segs: Vec<String> = inner.split('/').filter(|s| !s.is_empty()).map(str::to_string).collect();
+        if let Some((last, dirs)) = segs.split_last() {
+            self.cur = dirs.to_vec();
+            self.selected = [last.clone()].into();
+            self.anchor = Some(last.clone());
+        }
+    }
+
+    /// 항목을 넣거나 지울 수 있는 압축 파일인지 (zip · 7z · tar.gz · tar.xz)
+    pub fn editable(&self) -> bool {
+        matches!(self.contents, Contents::Ok(_)) && unpack::editable_kind(&self.path).is_some()
+    }
+
+    /// 고른 항목들의 압축 파일 안 전체 경로
+    pub fn selected_full(&self) -> Vec<String> {
+        self.selected.iter().map(|n| self.full(n)).collect()
     }
 
     fn clear_selection(&mut self) {
@@ -251,6 +281,7 @@ impl ArchiveView {
                 let mut up = false;
                 let mut start_drag: Option<String> = None;
                 let mods = ui.input(|i| i.modifiers);
+                let editable = unpack::editable_kind(&self.path).is_some();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     if !self.cur.is_empty() {
@@ -307,11 +338,34 @@ impl ArchiveView {
                                 action = ViewAction::ExtractSelected { choose: true };
                                 ui.close();
                             }
+                            if editable {
+                                ui.separator();
+                                if ui.button("압축 파일에서 지우기  (Delete)").clicked() {
+                                    let names = if self.selected.contains(&n.name) { self.selected_full() } else { vec![self.full(&n.name)] };
+                                    action = ViewAction::Delete(names);
+                                    ui.close();
+                                }
+                                if ui.button("파일 넣기…").clicked() {
+                                    action = ViewAction::AddFiles;
+                                    ui.close();
+                                }
+                            }
                         });
                     }
                     if nodes.is_empty() {
                         ui.add_space(20.0);
                         ui.vertical_centered(|ui| ui.weak("비어 있는 폴더입니다"));
+                    }
+                    // 빈 곳 우클릭: 파일 넣기
+                    let rest = ui.available_size_before_wrap();
+                    let (_, blank) = ui.allocate_exact_size(egui::vec2(rest.x, rest.y.max(40.0)), egui::Sense::click());
+                    if editable {
+                        blank.context_menu(|ui| {
+                            if ui.button("파일 넣기…").clicked() {
+                                action = ViewAction::AddFiles;
+                                ui.close();
+                            }
+                        });
                     }
                 });
                 // 끌기 시작: 고른 항목(없으면 그 줄)을 다른 창의 폴더로 → 거기에 풀기
@@ -327,14 +381,18 @@ impl ArchiveView {
                 }
                 // 키보드: Backspace 위로, Enter 열기, Esc 선택 해제, Ctrl+A 모두 선택 (활성 창만)
                 let keys = focused && !ui.ctx().egui_wants_keyboard_input();
-                let (back, open, esc, all) = ui.input(|i| {
+                let (back, open, esc, all, del) = ui.input(|i| {
                     (
                         i.key_pressed(egui::Key::Backspace),
                         i.key_pressed(egui::Key::Enter),
                         i.key_pressed(egui::Key::Escape),
                         i.modifiers.command && i.key_pressed(egui::Key::A),
+                        i.key_pressed(egui::Key::Delete),
                     )
                 });
+                if del && keys && editable && !self.selected.is_empty() {
+                    action = ViewAction::Delete(self.selected_full());
+                }
                 let (back, open, esc, all) = (back && keys, open && keys, esc && keys, all && keys);
                 if back {
                     if self.cur.is_empty() {

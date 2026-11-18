@@ -28,6 +28,14 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = CliLevel::Normal)]
     level: CliLevel,
 
+    /// 분할 압축: 이 크기마다 나눠 `.001`, `.002` … 로 저장 (예: 700m, 4g, 100k)
+    #[arg(long, value_name = "SIZE", value_parser = parse_split)]
+    split: Option<u64>,
+
+    /// 이미 압축된 파일(jpg, mp4, zip …)도 다시 압축 (기본은 그대로 넣어 시간 절약)
+    #[arg(long)]
+    always_compress: bool,
+
     /// 출력 폴더 (기본값: 압축 파일 옆에 확장자를 뺀 이름의 폴더)
     #[arg(short, long)]
     output: Option<PathBuf>,
@@ -221,6 +229,10 @@ fn human(b: u64) -> String {
     if i == 0 { format!("{b} B") } else { format!("{v:.1} {}", U[i]) }
 }
 
+fn parse_split(s: &str) -> Result<u64, String> {
+    unpack::parse_size(s).ok_or_else(|| format!("크기를 알 수 없습니다: {s} (예: 700m, 4g)"))
+}
+
 fn create(cli: &Cli, out: &Path) -> ExitCode {
     let Some(kind) = ArchiveKind::from_path(out) else {
         eprintln!("오류: 출력 파일 확장자는 .zip .7z .tar.gz .tar.xz 중 하나여야 합니다");
@@ -231,7 +243,13 @@ fn create(cli: &Cli, out: &Path) -> ExitCode {
             &cli.archives,
             out,
             kind,
-            &CompressOptions { password: cli.password.clone(), level: cli.level.into(), progress: p },
+            &CompressOptions {
+                password: cli.password.clone(),
+                level: cli.level.into(),
+                progress: p,
+                always_compress: cli.always_compress,
+                split: cli.split,
+            },
         )
     });
     match r {
@@ -239,8 +257,22 @@ fn create(cli: &Cli, out: &Path) -> ExitCode {
             for w in &s.warnings {
                 eprintln!("경고: {w}");
             }
-            let size = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
-            println!("완료: {} (파일 {}개, 폴더 {}개, {} → {})", out.display(), s.files, s.dirs, human(s.bytes), human(size));
+            let size = s.size;
+            let mut extra = String::new();
+            if s.stored > 0 {
+                extra += &format!(", 그대로 넣음 {}개", s.stored);
+            }
+            if s.parts > 0 {
+                extra += &format!(", {}조각으로 나눔", s.parts);
+            }
+            println!(
+                "완료: {} (파일 {}개, 폴더 {}개, {} → {}{extra})",
+                s.output.display(),
+                s.files,
+                s.dirs,
+                human(s.bytes),
+                human(size)
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {

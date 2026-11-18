@@ -26,6 +26,7 @@ eframe = { version = "0.37.0", optional = true }
 encoding_rs = "0.8.44"
 flate2 = "1.1.11"
 fs4 = "1.1.0"
+image = { version = "0.25.10", optional = true, default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico"] }
 rfd = { version = "0.18.0", optional = true }
 sevenz-rust2 = "0.25.0"
 tar = "0.4.46"
@@ -52,7 +53,7 @@ default = ["rar"]
 # RAR 풀기 (UnRAR 라이선스 — THIRD-PARTY-NOTICES.md 참고)
 rar = ["dep:unrar"]
 # 데스크톱 GUI 앱 (opizenAI_Unpack) — Windows / Linux
-gui = ["dep:eframe", "dep:rfd"]
+gui = ["dep:eframe", "dep:rfd", "dep:image"]
 
 [profile.release]
 opt-level = 3

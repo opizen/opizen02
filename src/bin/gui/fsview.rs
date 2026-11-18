@@ -48,6 +48,31 @@ pub enum FsCommand {
     Rename,
     NewFolder,
     Trash,
+    /// 즐겨찾기에 추가 (폴더)
+    Pin,
+    /// 새 탭에서 열기 (폴더)
+    OpenInNewTab,
+    /// 되돌리기 (Ctrl+Z)
+    Undo,
+}
+
+/// 보기 방식
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ViewMode {
+    #[default]
+    List,
+    /// 큰 아이콘 (사진은 미리보기)
+    Icons,
+}
+
+/// 한 화면 그리기 동안 모은 일들
+#[derive(Default)]
+struct Ev {
+    clicked: Option<PathBuf>,
+    menu_target: Option<PathBuf>,
+    start_drag: Option<PathBuf>,
+    chosen: Option<FsCommand>,
+    open: Option<PathBuf>,
 }
 
 pub struct FolderView {
@@ -59,6 +84,7 @@ pub struct FolderView {
     sort: table::Sort,
     /// 끄는 중에 마우스가 올라간 폴더 줄 (놓으면 그 폴더로)
     pub drop_folder: Option<PathBuf>,
+    pub mode: ViewMode,
 }
 
 fn is_hidden(path: &Path, name: &str) -> bool {
@@ -88,6 +114,7 @@ impl FolderView {
             anchor: None,
             sort: (0, true),
             drop_folder: None,
+            mode: ViewMode::List,
         };
         v.reload(show_hidden);
         v
@@ -165,6 +192,80 @@ impl FolderView {
         s
     }
 
+    /// 줄·타일 하나의 반응 처리 (목록·아이콘 보기 공통)
+    #[allow(clippy::too_many_arguments)]
+    fn item_events(&mut self, ui: &egui::Ui, r: &egui::Response, e: &FsEntry, dragging: &Option<std::sync::Arc<DragItems>>, ev: &mut Ev, can_paste: bool, any_archive_selected: bool) {
+        let sel = self.selected.contains(&e.path);
+        if r.clicked() {
+            ev.clicked = Some(e.path.clone());
+        }
+        if r.secondary_clicked() && !sel {
+            ev.menu_target = Some(e.path.clone());
+        }
+        if r.double_clicked() {
+            ev.open = Some(e.path.clone());
+        }
+        if r.drag_started() {
+            ev.start_drag = Some(e.path.clone());
+        }
+        // 끄는 중에 폴더 위에 있으면 그 폴더가 놓을 곳
+        if let Some(d) = dragging
+            && e.is_dir
+            && r.contains_pointer()
+            && !matches!(&**d, DragItems::Files { paths, .. } if paths.contains(&e.path))
+        {
+            table::drop_highlight(ui, r.rect);
+            self.drop_folder = Some(e.path.clone());
+        }
+        let any_archive = e.archive || any_archive_selected;
+        r.context_menu(|ui| {
+            let mut item = |ui: &mut egui::Ui, label: &str, c: FsCommand| {
+                if ui.button(label).clicked() {
+                    ev.chosen = Some(c);
+                    ui.close();
+                }
+            };
+            if ui.button(if e.archive { "압축 파일 안 보기" } else { "열기" }).clicked() {
+                ev.open = Some(e.path.clone());
+                ui.close();
+            }
+            if e.is_dir {
+                item(ui, "새 탭에서 열기", FsCommand::OpenInNewTab);
+                item(ui, "즐겨찾기에 추가", FsCommand::Pin);
+            }
+            if any_archive {
+                ui.separator();
+                item(ui, "알아서 풀기", FsCommand::Extract);
+                item(ui, "여기에 압축 풀기", FsCommand::ExtractHere);
+                item(ui, "새 폴더에 압축 풀기", FsCommand::ExtractNewFolder);
+                item(ui, "다른 위치에 풀기…", FsCommand::ExtractTo);
+                item(ui, "압축 파일 검사", FsCommand::Test);
+            }
+            ui.separator();
+            item(ui, "압축하기", FsCommand::Compress);
+            ui.separator();
+            item(ui, "잘라내기  (Ctrl+X)", FsCommand::Cut);
+            item(ui, "복사  (Ctrl+C)", FsCommand::Copy);
+            if can_paste {
+                item(ui, "붙여넣기  (Ctrl+V)", FsCommand::Paste);
+            }
+            item(ui, "이름 바꾸기  (F2)", FsCommand::Rename);
+            item(ui, "휴지통으로  (Delete)", FsCommand::Trash);
+            ui.separator();
+            item(ui, if cfg!(windows) { "탐색기에서 보기" } else { "파일 관리자에서 보기" }, FsCommand::ShowInSystem);
+        });
+    }
+
+    fn icon_of(e: &FsEntry) -> Icon {
+        if e.is_dir {
+            Icon::Folder
+        } else if e.archive {
+            Icon::Archive
+        } else {
+            Icon::File
+        }
+    }
+
     /// `pane`: 이 표가 있는 창 번호 (끌기용), `focused`: 키보드를 받을 창인지
     pub fn table_ui(&mut self, ui: &mut egui::Ui, pane: usize, focused: bool, can_paste: bool) -> FsAction {
         self.drop_folder = None;
@@ -174,129 +275,112 @@ impl FolderView {
             return FsAction::None;
         }
         let mut action = FsAction::None;
-        let all = [
-            Col { id: 0, title: "이름", width: 0.0, right: false },
-            Col { id: 1, title: "수정한 날짜", width: 130.0, right: false },
-            Col { id: 2, title: "종류", width: 110.0, right: false },
-            Col { id: 3, title: "크기", width: 80.0, right: true },
-        ];
-        let shown = table::fit_columns(&all, ui.available_width());
-        let cols: Vec<Col> = shown.iter().map(|&i| Col { ..all[i] }).collect();
-        let before = self.sort;
-        table::header(ui, &cols, &mut self.sort);
-        if before != self.sort {
-            self.sort_entries();
-        }
         let mods = ui.input(|i| i.modifiers);
         let dragging: Option<std::sync::Arc<DragItems>> = egui::DragAndDrop::payload::<DragItems>(ui.ctx());
-        let mut clicked: Option<PathBuf> = None;
-        let mut menu_target: Option<PathBuf> = None;
-        let mut start_drag: Option<PathBuf> = None;
-        let mut chosen: Option<FsCommand> = None;
-        let mut open_it: Option<PathBuf> = None;
+        let mut ev = Ev::default();
+        let any_archive_selected = self.selection().iter().any(|e| e.archive);
+        let entries = std::mem::take(&mut self.entries);
 
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            if self.entries.is_empty() {
-                ui.add_space(24.0);
-                ui.vertical_centered(|ui| ui.weak("비어 있는 폴더입니다"));
+        if self.mode == ViewMode::List {
+            let all = [
+                Col { id: 0, title: "이름", width: 0.0, right: false },
+                Col { id: 1, title: "수정한 날짜", width: 130.0, right: false },
+                Col { id: 2, title: "종류", width: 110.0, right: false },
+                Col { id: 3, title: "크기", width: 80.0, right: true },
+            ];
+            let shown = table::fit_columns(&all, ui.available_width());
+            let cols: Vec<Col> = shown.iter().map(|&i| Col { ..all[i] }).collect();
+            let before = self.sort;
+            table::header(ui, &cols, &mut self.sort);
+            if before != self.sort {
+                self.entries = entries;
+                self.sort_entries();
+                return FsAction::None;
             }
-            let any_archive_selected = self.selection().iter().any(|e| e.archive);
-            for (i, e) in self.entries.iter().enumerate() {
-                let icon = if e.is_dir {
-                    Icon::Folder
-                } else if e.archive {
-                    Icon::Archive
-                } else {
-                    Icon::File
-                };
-                let date = e.modified.map(crate::fmt_time).unwrap_or_default();
-                let size = if e.is_dir { String::new() } else { crate::human_size(e.size) };
-                let full = [(e.name.clone(), None), (date, None), (kind(e), None), (size, None)];
-                let cells: Vec<_> = shown.iter().map(|&i| full[i].clone()).collect();
-                let sel = self.selected.contains(&e.path);
-                let r = table::row_ex(ui, &cols, icon, &cells, sel, i, true);
-                if r.clicked() {
-                    clicked = Some(e.path.clone());
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                if entries.is_empty() {
+                    ui.add_space(24.0);
+                    ui.vertical_centered(|ui| ui.weak("비어 있는 폴더입니다"));
                 }
-                if r.secondary_clicked() && !sel {
-                    menu_target = Some(e.path.clone());
+                for (i, e) in entries.iter().enumerate() {
+                    let date = e.modified.map(crate::fmt_time).unwrap_or_default();
+                    let size = if e.is_dir { String::new() } else { crate::human_size(e.size) };
+                    let full = [(e.name.clone(), None), (date, None), (kind(e), None), (size, None)];
+                    let cells: Vec<_> = shown.iter().map(|&i| full[i].clone()).collect();
+                    let sel = self.selected.contains(&e.path);
+                    let r = table::row_ex(ui, &cols, Self::icon_of(e), &cells, sel, i, true);
+                    self.item_events(ui, &r, e, &dragging, &mut ev, can_paste, any_archive_selected);
                 }
-                if r.double_clicked() {
-                    action = FsAction::Open(e.path.clone());
-                }
-                if r.drag_started() {
-                    start_drag = Some(e.path.clone());
-                }
-                // 끄는 중에 폴더 위에 있으면 그 폴더가 놓을 곳
-                if let Some(d) = &dragging
-                    && e.is_dir
-                    && r.contains_pointer()
-                    && !matches!(&**d, DragItems::Files { paths, .. } if paths.contains(&e.path))
-                {
-                    table::drop_highlight(ui, r.rect);
-                    self.drop_folder = Some(e.path.clone());
-                }
-                let any_archive = e.archive || any_archive_selected;
-                r.context_menu(|ui| {
-                    let mut item = |ui: &mut egui::Ui, label: &str, c: FsCommand| {
-                        if ui.button(label).clicked() {
-                            chosen = Some(c);
-                            ui.close();
-                        }
-                    };
-                    if ui.button(if e.archive { "압축 파일 안 보기" } else { "열기" }).clicked() {
-                        open_it = Some(e.path.clone());
-                        ui.close();
-                    }
-                    if any_archive {
-                        ui.separator();
-                        item(ui, "알아서 풀기", FsCommand::Extract);
-                        item(ui, "여기에 압축 풀기", FsCommand::ExtractHere);
-                        item(ui, "새 폴더에 압축 풀기", FsCommand::ExtractNewFolder);
-                        item(ui, "다른 위치에 풀기…", FsCommand::ExtractTo);
-                        item(ui, "압축 파일 검사", FsCommand::Test);
-                    }
-                    ui.separator();
-                    item(ui, "압축하기", FsCommand::Compress);
-                    ui.separator();
-                    item(ui, "잘라내기  (Ctrl+X)", FsCommand::Cut);
-                    item(ui, "복사  (Ctrl+C)", FsCommand::Copy);
-                    if can_paste {
-                        item(ui, "붙여넣기  (Ctrl+V)", FsCommand::Paste);
-                    }
-                    item(ui, "이름 바꾸기  (F2)", FsCommand::Rename);
-                    item(ui, "휴지통으로  (Delete)", FsCommand::Trash);
-                    ui.separator();
-                    item(ui, if cfg!(windows) { "탐색기에서 보기" } else { "파일 관리자에서 보기" }, FsCommand::ShowInSystem);
-                });
-            }
-            // 빈 곳: 새 폴더 / 붙여넣기
-            let rest = ui.available_size_before_wrap();
-            let (_, blank) = ui.allocate_exact_size(egui::vec2(rest.x, rest.y.max(40.0)), egui::Sense::click());
-            if blank.clicked() && !mods.command && !mods.shift {
-                self.selected.clear();
-            }
-            blank.context_menu(|ui| {
-                if ui.button("새 폴더  (Ctrl+Shift+N)").clicked() {
-                    chosen = Some(FsCommand::NewFolder);
-                    ui.close();
-                }
-                if ui.add_enabled(can_paste, egui::Button::new("붙여넣기  (Ctrl+V)")).clicked() {
-                    chosen = Some(FsCommand::Paste);
-                    ui.close();
-                }
+                self.blank_area(ui, mods, can_paste, &mut ev);
             });
-        });
+        } else {
+            // 아이콘 보기: 타일을 줄마다 채움
+            const TW: f32 = 108.0;
+            const TH: f32 = 112.0;
+            let width = ui.available_width();
+            let per_row = ((width - 8.0) / TW).floor().max(1.0) as usize;
+            let rows = entries.len().div_ceil(per_row);
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                ui.add_space(6.0);
+                if entries.is_empty() {
+                    ui.add_space(18.0);
+                    ui.vertical_centered(|ui| ui.weak("비어 있는 폴더입니다"));
+                }
+                for row in 0..rows {
+                    ui.horizontal(|ui| {
+                        ui.add_space(4.0);
+                        for e in entries.iter().skip(row * per_row).take(per_row) {
+                            let (rect, r) = ui.allocate_exact_size(egui::vec2(TW, TH), egui::Sense::click_and_drag());
+                            let r = r.on_hover_text(&e.name);
+                            let sel = self.selected.contains(&e.path);
+                            let tile = rect.shrink(3.0);
+                            if sel {
+                                ui.painter().rect_filled(tile, 6.0, crate::style::selection_fill(ui));
+                            } else if r.hovered() {
+                                ui.painter().rect_filled(tile, 6.0, crate::style::hover_fill(ui));
+                            }
+                            let pic = egui::Rect::from_center_size(egui::pos2(tile.center().x, tile.top() + 36.0), egui::vec2(TW - 20.0, 60.0));
+                            match crate::thumbs::texture(ui.ctx(), &e.path, 160) {
+                                Some(tex) => crate::thumbs::paint_fit(ui, pic, &tex),
+                                None => crate::icons::paint(
+                                    ui.painter(),
+                                    egui::Rect::from_center_size(pic.center(), egui::vec2(46.0, 46.0)),
+                                    Self::icon_of(e),
+                                    crate::style::weak(ui),
+                                ),
+                            }
+                            // 이름 (두 줄까지)
+                            let text_rect = egui::Rect::from_min_max(egui::pos2(tile.left() + 4.0, tile.top() + 70.0), egui::pos2(tile.right() - 4.0, tile.bottom() - 2.0));
+                            let mut job = egui::text::LayoutJob::simple(
+                                e.name.clone(),
+                                egui::FontId::proportional(12.5),
+                                ui.visuals().text_color(),
+                                text_rect.width(),
+                            );
+                            job.halign = egui::Align::Center;
+                            job.wrap.max_rows = 2;
+                            job.wrap.break_anywhere = true;
+                            let galley = ui.painter().layout_job(job);
+                            ui.painter().galley(egui::pos2(text_rect.center().x, text_rect.top()), galley, ui.visuals().text_color());
+                            self.item_events(ui, &r, e, &dragging, &mut ev, can_paste, any_archive_selected);
+                        }
+                    });
+                }
+                self.blank_area(ui, mods, can_paste, &mut ev);
+            });
+        }
+        self.entries = entries;
 
-        if let Some(p) = menu_target {
+        if let Some(p) = ev.menu_target {
             self.selected = [p.clone()].into();
             self.anchor = Some(p);
         }
-        if let Some(p) = clicked {
+        if let Some(p) = ev.clicked {
             self.click(&p, mods);
         }
-        if let Some(p) = start_drag {
+        if let Some(p) = ev.start_drag {
             // 고르지 않은 줄을 끌면 그 줄만
             if !self.selected.contains(&p) {
                 self.selected = [p.clone()].into();
@@ -304,10 +388,10 @@ impl FolderView {
             }
             egui::DragAndDrop::set_payload(ui.ctx(), DragItems::Files { pane, paths: self.selected_paths() });
         }
-        if let Some(p) = open_it {
+        if let Some(p) = ev.open {
             action = FsAction::Open(p);
         }
-        if let Some(c) = chosen {
+        if let Some(c) = ev.chosen {
             action = FsAction::Command(c);
         }
 
@@ -357,6 +441,29 @@ impl FolderView {
             }
         }
         action
+    }
+
+    /// 빈 곳: 누르면 선택 해제, 우클릭은 새 폴더 / 붙여넣기 / 되돌리기
+    fn blank_area(&mut self, ui: &mut egui::Ui, mods: egui::Modifiers, can_paste: bool, ev: &mut Ev) {
+        let rest = ui.available_size_before_wrap();
+        let (_, blank) = ui.allocate_exact_size(egui::vec2(rest.x, rest.y.max(40.0)), egui::Sense::click());
+        if blank.clicked() && !mods.command && !mods.shift {
+            self.selected.clear();
+        }
+        blank.context_menu(|ui| {
+            if ui.button("새 폴더  (Ctrl+Shift+N)").clicked() {
+                ev.chosen = Some(FsCommand::NewFolder);
+                ui.close();
+            }
+            if ui.add_enabled(can_paste, egui::Button::new("붙여넣기  (Ctrl+V)")).clicked() {
+                ev.chosen = Some(FsCommand::Paste);
+                ui.close();
+            }
+            if ui.button("되돌리기  (Ctrl+Z)").clicked() {
+                ev.chosen = Some(FsCommand::Undo);
+                ui.close();
+            }
+        });
     }
 
     fn click(&mut self, path: &Path, mods: egui::Modifiers) {

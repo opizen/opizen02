@@ -697,3 +697,122 @@ fn trash_after_extract() {
         }
     }
 }
+
+#[test]
+fn incompressible_files_are_stored_and_still_extract() {
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    // 무작위에 가까운 데이터(압축 안 됨), 이미 압축된 형식, 잘 줄어드는 글
+    let mut x: u64 = 0x1234_5678;
+    let noise: Vec<u8> = (0..200_000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    fs::write(src.join("noise.bin"), &noise).unwrap();
+    fs::write(src.join("photo.jpg"), b"not really a jpeg but named so".repeat(100)).unwrap();
+    fs::write(src.join("text.txt"), "가나다라 ".repeat(20_000)).unwrap();
+    assert!(unpack::is_incompressible(&src.join("noise.bin")));
+    assert!(unpack::is_incompressible(&src.join("photo.jpg")));
+    assert!(!unpack::is_incompressible(&src.join("text.txt")));
+
+    for kind in [ArchiveKind::Zip, ArchiveKind::SevenZ] {
+        let out = tmp.path().join(format!("smart{}", kind.ext()));
+        let s = compress(std::slice::from_ref(&src), &out, kind, None).unwrap();
+        assert_eq!(s.stored, 2, "{kind:?}");
+        let dest = tmp.path().join(format!("out-{}", kind.label()));
+        extract(&out, Some(&dest), &Options::default()).unwrap();
+        assert_eq!(fs::read(dest.join("src/noise.bin")).unwrap(), noise);
+        assert_eq!(fs::read_to_string(dest.join("src/text.txt")).unwrap(), "가나다라 ".repeat(20_000));
+    }
+    // zip: 그대로 넣은 파일은 Stored, 글은 Deflated
+    let mut z = zip::ZipArchive::new(File::open(tmp.path().join("smart.zip")).unwrap()).unwrap();
+    assert_eq!(z.by_name("src/noise.bin").unwrap().compression(), zip::CompressionMethod::Stored);
+    assert_eq!(z.by_name("src/text.txt").unwrap().compression(), zip::CompressionMethod::Deflated);
+    // 항상 압축 옵션
+    let out = tmp.path().join("always.zip");
+    let s = compress_with(std::slice::from_ref(&src), &out, ArchiveKind::Zip, &CompressOptions { always_compress: true, ..Default::default() })
+        .unwrap();
+    assert_eq!(s.stored, 0);
+}
+
+#[test]
+fn split_output_makes_numbered_parts_that_extract() {
+    let tmp = tempdir().unwrap();
+    let inputs = big_tree(&tmp.path().join("in"));
+    for kind in ArchiveKind::ALL {
+        let out = tmp.path().join(format!("split{}", kind.ext()));
+        let opts = CompressOptions { split: Some(16 * 1024), always_compress: true, ..Default::default() };
+        let s = compress_with(&inputs, &out, kind, &opts).unwrap();
+        assert!(s.parts >= 2, "{kind:?}: {} parts", s.parts);
+        assert!(!out.exists());
+        assert_eq!(s.output, tmp.path().join(format!("split{}.001", kind.ext())));
+        let total: u64 = (1..=s.parts)
+            .map(|i| fs::metadata(tmp.path().join(format!("split{}.{i:03}", kind.ext()))).unwrap().len())
+            .sum();
+        assert_eq!(total, s.size);
+        let dest = tmp.path().join(format!("x-{}", kind.label()));
+        let st = extract(&s.output, Some(&dest), &Options::default()).unwrap();
+        assert!(st.files > 0, "{kind:?}");
+    }
+    assert_eq!(unpack::parse_size("700m"), Some(700 << 20));
+    assert_eq!(unpack::parse_size("1.5G"), Some(3 << 29));
+    assert_eq!(unpack::parse_size("100 KB"), Some(100 << 10));
+    assert_eq!(unpack::parse_size("0"), None);
+    assert_eq!(unpack::parse_size("abc"), None);
+}
+
+#[test]
+fn edit_archives_add_replace_and_remove() {
+    use unpack::{EditOptions, edit_archive, editable_kind};
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    fs::create_dir_all(src.join("문서/하위")).unwrap();
+    fs::write(src.join("문서/a.txt"), "A").unwrap();
+    fs::write(src.join("문서/하위/b.txt"), "B").unwrap();
+    fs::write(src.join("문서/c.txt"), "C").unwrap();
+    let new = tmp.path().join("new");
+    fs::create_dir_all(new.join("사진")).unwrap();
+    fs::write(new.join("a.txt"), "새 A").unwrap();
+    fs::write(new.join("사진/p.txt"), "P").unwrap();
+
+    for kind in ArchiveKind::ALL {
+        let arc = tmp.path().join(format!("e{}", kind.ext()));
+        compress(std::slice::from_ref(&src.join("문서")), &arc, kind, None).unwrap();
+        assert_eq!(editable_kind(&arc), Some(kind));
+        let s = edit_archive(
+            &arc,
+            &["문서/하위".to_string(), "문서/c.txt".to_string()],
+            &[new.join("a.txt"), new.join("사진")],
+            "문서",
+            &EditOptions::default(),
+        )
+        .unwrap();
+        assert_eq!((s.added, s.removed), (2, 2), "{kind:?}");
+        let mut names: Vec<String> = list(&arc, &Options::default()).unwrap().into_iter().filter(|e| !e.is_dir).map(|e| e.name).collect();
+        names.sort();
+        assert_eq!(names, ["문서/a.txt", "문서/사진/p.txt"], "{kind:?}");
+        let out = tmp.path().join(format!("o-{}", kind.label()));
+        extract(&arc, Some(&out), &Options::default()).unwrap();
+        assert_eq!(fs::read_to_string(out.join("문서/a.txt")).unwrap(), "새 A", "{kind:?}");
+        assert!(!arc.with_file_name(format!("e{}.part", kind.ext())).exists());
+        // 모두 지우기는 거절, 원본은 그대로
+        if kind != ArchiveKind::Zip {
+            assert!(edit_archive(&arc, &["문서".into()], &[], "", &EditOptions::default()).is_err());
+            assert_eq!(list(&arc, &Options::default()).unwrap().iter().filter(|e| !e.is_dir).count(), 2);
+        }
+    }
+    // 암호 zip: 남긴 항목은 암호 그대로, 새 항목도 암호
+    let arc = tmp.path().join("pw.zip");
+    compress(std::slice::from_ref(&src.join("문서")), &arc, ArchiveKind::Zip, Some("비번")).unwrap();
+    edit_archive(&arc, &[], &[new.join("a.txt")], "", &EditOptions { password: Some("비번".into()), ..Default::default() }).unwrap();
+    assert!(unpack::is_password_error(&extract(&arc, Some(&tmp.path().join("pw-x")), &Options::default()).unwrap_err()));
+    let o = Options { password: Some("비번".into()), ..Default::default() };
+    let st = extract(&arc, Some(&tmp.path().join("pw-ok")), &o).unwrap();
+    assert_eq!(st.files, 4);
+    assert_eq!(fs::read_to_string(tmp.path().join("pw-ok/a.txt")).unwrap(), "새 A");
+}

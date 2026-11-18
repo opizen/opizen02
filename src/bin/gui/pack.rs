@@ -11,6 +11,36 @@ use std::thread;
 use std::time::{Duration, Instant};
 use unpack::{ArchiveKind, CompressOptions, CompressStats, Level, Progress, compress_with, default_archive_path, is_cancelled};
 
+/// 분할 크기 고르기 (나누지 않음 · 100 MB · 700 MB · 4 GB · 직접 입력). `text`는 `700m` 같은 글자, 비면 나누지 않음.
+pub fn split_ui(ui: &mut egui::Ui, id: &str, text: &mut String) {
+    const PRESETS: [(&str, &str); 4] = [("", "나누지 않음"), ("100m", "100 MB"), ("700m", "700 MB (CD)"), ("4000m", "4 GB (FAT32·USB)")];
+    let custom = !PRESETS.iter().any(|(v, _)| *v == text.as_str());
+    let shown = if custom { "직접 입력".to_string() } else { PRESETS.iter().find(|(v, _)| *v == text.as_str()).map(|p| p.1).unwrap_or("").to_string() };
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt(id).selected_text(shown).show_ui(ui, |ui| {
+            for (v, label) in PRESETS {
+                if ui.selectable_label(!custom && text == v, label).clicked() {
+                    *text = v.to_string();
+                }
+            }
+            if ui.selectable_label(custom, "직접 입력").clicked() && !custom {
+                *text = "50m".into();
+            }
+        });
+        if custom {
+            ui.add(egui::TextEdit::singleline(text).desired_width(70.0).hint_text("50m"));
+            if unpack::parse_size(text).is_none() {
+                ui.colored_label(crate::style::WARN, "예: 50m, 2g");
+            }
+        }
+    });
+}
+
+/// 분할 크기 글자 → 바이트 (비었거나 잘못되면 None)
+pub fn split_bytes(text: &str) -> Option<u64> {
+    if text.trim().is_empty() { None } else { unpack::parse_size(text) }
+}
+
 const AUTO_CLOSE: Duration = Duration::from_millis(1200);
 
 enum Phase {
@@ -29,6 +59,8 @@ pub struct PackApp {
     password: String,
     password2: String,
     level: Level,
+    always_compress: bool,
+    split: String,
     phase: Phase,
     progress: Option<Arc<Progress>>,
 }
@@ -50,6 +82,8 @@ impl PackApp {
             password: String::new(),
             password2: String::new(),
             level: saved.level,
+            always_compress: saved.always_compress,
+            split: saved.split.clone(),
             phase: Phase::Ask,
             progress: None,
         };
@@ -73,6 +107,8 @@ impl PackApp {
             password: (kind.supports_password() && !self.password.is_empty()).then(|| self.password.clone()),
             level: self.level,
             progress: Some(progress),
+            always_compress: self.always_compress,
+            split: split_bytes(&self.split),
         };
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
@@ -111,6 +147,15 @@ impl PackApp {
                     ui.selectable_value(&mut self.level, l, l.label());
                 }
             });
+            ui.end_row();
+
+            ui.label("분할");
+            split_ui(ui, "pack_split", &mut self.split);
+            ui.end_row();
+
+            ui.label("");
+            ui.checkbox(&mut self.always_compress, "이미 압축된 파일(jpg·mp4·zip …)도 다시 압축")
+                .on_hover_text("끄면 압축해도 줄지 않는 파일은 그대로 넣어 훨씬 빠릅니다");
             ui.end_row();
 
             ui.label("파일 이름");
@@ -157,7 +202,8 @@ impl PackApp {
 
         let out = self.output();
         let pw_ok = self.password.is_empty() || !self.kind.supports_password() || self.password == self.password2;
-        let exists = out.exists();
+        let exists = out.exists() || (split_bytes(&self.split).is_some() && out.with_file_name(format!("{}.001", out.file_name().unwrap_or_default().to_string_lossy())).exists());
+        let split_ok = self.split.trim().is_empty() || unpack::parse_size(&self.split).is_some();
         let valid = !self.stem.trim().is_empty() && !self.stem.contains(['/', '\\']);
         if !pw_ok {
             ui.colored_label(crate::style::WARN, "암호가 서로 다릅니다");
@@ -166,7 +212,7 @@ impl PackApp {
         }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let can = pw_ok && !exists && valid;
+            let can = pw_ok && !exists && valid && split_ok;
             if ui.add_enabled(can, crate::style::primary("압축")).clicked() || (go && can) {
                 self.start(ui.ctx());
             }
@@ -212,7 +258,7 @@ impl eframe::App for PackApp {
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
             Phase::Done(s, at) => {
-                let size = std::fs::metadata(&s.output).map(|m| m.len()).unwrap_or(0);
+                let size = s.size;
                 ui.horizontal(|ui| {
                     ui.colored_label(crate::style::OK, "✔");
                     ui.strong(s.output.file_name().unwrap_or_default().to_string_lossy());
@@ -224,6 +270,16 @@ impl eframe::App for PackApp {
                     crate::human_size(s.bytes),
                     crate::human_size(size)
                 ));
+                if s.parts > 0 || s.stored > 0 {
+                    let mut t = Vec::new();
+                    if s.parts > 0 {
+                        t.push(format!("{}조각으로 나눔 (.001 ~ .{:03})", s.parts, s.parts));
+                    }
+                    if s.stored > 0 {
+                        t.push(format!("이미 압축된 파일 {}개는 그대로 넣음", s.stored));
+                    }
+                    ui.weak(t.join(" · "));
+                }
                 for w in &s.warnings {
                     ui.colored_label(crate::style::WARN, w);
                 }

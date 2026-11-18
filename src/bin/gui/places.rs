@@ -6,6 +6,8 @@ pub struct Place {
     pub label: String,
     pub path: PathBuf,
     pub drive: bool,
+    /// 사용자가 추가한 즐겨찾기 (뺄 수 있음)
+    pub pinned: bool,
 }
 
 pub fn home() -> PathBuf {
@@ -28,7 +30,7 @@ fn xdg_dir(key: &str) -> Option<PathBuf> {
 /// 즐겨찾기 (있는 폴더만)
 pub fn favorites() -> Vec<Place> {
     let home = home();
-    let mut out = vec![Place { label: "홈".into(), path: home.clone(), drive: false }];
+    let mut out = vec![Place { label: "홈".into(), path: home.clone(), drive: false, pinned: false }];
     let list: [(&str, &str, &str); 4] = [
         ("바탕 화면", "Desktop", "DESKTOP"),
         ("문서", "Documents", "DOCUMENTS"),
@@ -41,7 +43,19 @@ pub fn favorites() -> Vec<Place> {
         #[cfg(windows)]
         let path = home.join(folder);
         if path.is_dir() && path != home {
-            out.push(Place { label: label.into(), path, drive: false });
+            out.push(Place { label: label.into(), path, drive: false, pinned: false });
+        }
+    }
+    out
+}
+
+/// 기본 즐겨찾기 + 사용자가 추가한 폴더 (없어진 폴더는 뺌, 겹치면 한 번만)
+pub fn favorites_with(pins: &[PathBuf]) -> Vec<Place> {
+    let mut out = favorites();
+    for p in pins {
+        if p.is_dir() && !out.iter().any(|x| &x.path == p) {
+            let label = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string());
+            out.push(Place { label, path: p.clone(), drive: false, pinned: true });
         }
     }
     out
@@ -55,16 +69,16 @@ pub fn drives() -> Vec<Place> {
         for c in 'C'..='Z' {
             let p = PathBuf::from(format!("{c}:\\"));
             if p.exists() {
-                out.push(Place { label: format!("{c}: 드라이브"), path: p, drive: true });
+                out.push(Place { label: format!("{c}: 드라이브"), path: p, drive: true, pinned: false });
             }
         }
     } else {
-        out.push(Place { label: "컴퓨터 (/)".into(), path: PathBuf::from("/"), drive: true });
+        out.push(Place { label: "컴퓨터 (/)".into(), path: PathBuf::from("/"), drive: true, pinned: false });
         let user = std::env::var("USER").unwrap_or_default();
         for base in [format!("/media/{user}"), "/run/media".to_string(), "/mnt".to_string()] {
             if let Ok(rd) = std::fs::read_dir(&base) {
                 for e in rd.flatten().filter(|e| e.path().is_dir()) {
-                    out.push(Place { label: e.file_name().to_string_lossy().into_owned(), path: e.path(), drive: true });
+                    out.push(Place { label: e.file_name().to_string_lossy().into_owned(), path: e.path(), drive: true, pinned: false });
                 }
             }
         }

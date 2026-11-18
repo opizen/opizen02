@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod compress;
-pub use compress::{ArchiveKind, CompressOptions, CompressStats, Level, compress, compress_with, default_archive_path};
+pub use compress::{
+    ArchiveKind, CompressOptions, CompressStats, Level, compress, compress_with, default_archive_path, is_incompressible, parse_size, split_file, EditOptions, EditStats, edit_archive, editable_kind,
+};
 
 /// 프로그램 이름
 pub const APP_NAME: &str = "opizenAI_Unpack";
@@ -1179,7 +1181,7 @@ fn extract_zip(path: &Path, root: &Path, opts: &Options, limit: Option<u64>) -> 
 }
 
 /// zip 항목 이름. UTF-8이 아니면(한국어 Windows에서 만든 zip 등) CP949로 읽습니다.
-fn zip_entry_name<R: Read>(file: &zip::read::ZipFile<'_, R>) -> String {
+pub(crate) fn zip_entry_name<R: Read>(file: &zip::read::ZipFile<'_, R>) -> String {
     decode_zip_name(file.name_raw()).unwrap_or_else(|| file.name().map(|n| n.into_owned()).unwrap_or_default())
 }
 

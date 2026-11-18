@@ -22,11 +22,14 @@ mod home;
 mod icons;
 mod pack;
 mod pane;
+mod preview;
+mod search;
 mod places;
 mod quick;
 mod settings;
 mod style;
 mod table;
+mod thumbs;
 
 use eframe::egui;
 use std::path::{Path, PathBuf};
@@ -93,7 +96,7 @@ fn main() -> eframe::Result {
             let tag = kind.map(|k| k.label()).unwrap_or("ASK");
             // 다른 프로세스가 모아서 처리하면 이 프로세스는 조용히 끝냄
             let Some(files) = gather::gather(tag, files) else { return Ok(()) };
-            let size = if kind.is_some() { [460.0, 200.0] } else { [520.0, 330.0] };
+            let size = if kind.is_some() { [460.0, 220.0] } else { [540.0, 380.0] };
             return eframe::run_native(
                 unpack::APP_NAME,
                 small_window(size),
