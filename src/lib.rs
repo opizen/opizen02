@@ -120,10 +120,12 @@ impl Progress {
         self.done.store(0, Ordering::Relaxed);
         self.total.store(total, Ordering::Relaxed);
     }
-    pub(crate) fn add(&self, n: u64) {
+    /// 처리한 양을 더함 (작업 쪽에서 호출)
+    pub fn add(&self, n: u64) {
         self.done.fetch_add(n, Ordering::Relaxed);
     }
-    pub(crate) fn set_current(&self, s: &str) {
+    /// 지금 처리 중인 항목 이름 (작업 쪽에서 호출)
+    pub fn set_current(&self, s: &str) {
         if let Ok(mut c) = self.current.lock() {
             s.clone_into(&mut c);
         }

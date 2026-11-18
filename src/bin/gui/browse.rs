@@ -200,7 +200,8 @@ impl ArchiveView {
     }
 
     /// 내용 표
-    pub fn table_ui(&mut self, ui: &mut egui::Ui, password: &mut String) -> ViewAction {
+    /// `pane`: 이 표가 있는 창 번호 (끌기용), `focused`: 키보드를 받을 창인지
+    pub fn table_ui(&mut self, ui: &mut egui::Ui, password: &mut String, pane: usize, focused: bool) -> ViewAction {
         let mut action = ViewAction::None;
         match &self.contents {
             Contents::Failed(e) => {
@@ -237,15 +238,18 @@ impl ArchiveView {
                 let mut nodes = children(entries, &self.cur);
                 sort_nodes(&mut nodes, self.sort);
                 // 폴더 보기와 같은 순서: 이름 / 수정한 날짜 / 종류 / 크기
-                let cols = [
-                    Col { title: "이름", width: 0.0, right: false },
-                    Col { title: "수정한 날짜", width: 140.0, right: false },
-                    Col { title: "종류", width: 120.0, right: false },
-                    Col { title: "크기", width: 90.0, right: true },
+                let all = [
+                    Col { id: 0, title: "이름", width: 0.0, right: false },
+                    Col { id: 1, title: "수정한 날짜", width: 130.0, right: false },
+                    Col { id: 2, title: "종류", width: 110.0, right: false },
+                    Col { id: 3, title: "크기", width: 80.0, right: true },
                 ];
+                let shown = table::fit_columns(&all, ui.available_width());
+                let cols: Vec<Col> = shown.iter().map(|&i| Col { ..all[i] }).collect();
                 table::header(ui, &cols, &mut self.sort);
                 let mut enter = None;
                 let mut up = false;
+                let mut start_drag: Option<String> = None;
                 let mods = ui.input(|i| i.modifiers);
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
@@ -263,10 +267,14 @@ impl ArchiveView {
                         };
                         let date = n.modified.map(crate::fmt_time).unwrap_or_default();
                         let sel = self.selected.contains(&n.name);
-                        let cells = [(n.name.clone(), None), (date, None), (kind, None), (crate::human_size(n.size), None)];
-                        let r = table::row(ui, &cols, icon, &cells, sel, i + usize::from(!self.cur.is_empty()));
+                        let full = [(n.name.clone(), None), (date, None), (kind, None), (crate::human_size(n.size), None)];
+                        let cells: Vec<_> = shown.iter().map(|&i| full[i].clone()).collect();
+                        let r = table::row_ex(ui, &cols, icon, &cells, sel, i + usize::from(!self.cur.is_empty()), true);
                         if r.clicked() {
                             self.click(&nodes, &n.name, mods);
+                        }
+                        if r.drag_started() {
+                            start_drag = Some(n.name.clone());
                         }
                         if r.secondary_clicked() && !sel {
                             self.clear_selection();
@@ -306,7 +314,19 @@ impl ArchiveView {
                         ui.vertical_centered(|ui| ui.weak("비어 있는 폴더입니다"));
                     }
                 });
-                // 키보드: Backspace 위로, Enter 열기, Esc 선택 해제, Ctrl+A 모두 선택
+                // 끌기 시작: 고른 항목(없으면 그 줄)을 다른 창의 폴더로 → 거기에 풀기
+                if let Some(name) = start_drag {
+                    if !self.selected.contains(&name) {
+                        self.clear_selection();
+                        self.selected.insert(name.clone());
+                        self.anchor = Some(name);
+                    }
+                    if let Some(sel) = self.selection() {
+                        egui::DragAndDrop::set_payload(ui.ctx(), crate::dnd::DragItems::Archive { pane, archive: self.path.clone(), sel });
+                    }
+                }
+                // 키보드: Backspace 위로, Enter 열기, Esc 선택 해제, Ctrl+A 모두 선택 (활성 창만)
+                let keys = focused && !ui.ctx().egui_wants_keyboard_input();
                 let (back, open, esc, all) = ui.input(|i| {
                     (
                         i.key_pressed(egui::Key::Backspace),
@@ -315,6 +335,7 @@ impl ArchiveView {
                         i.modifiers.command && i.key_pressed(egui::Key::A),
                     )
                 });
+                let (back, open, esc, all) = (back && keys, open && keys, esc && keys, all && keys);
                 if back {
                     if self.cur.is_empty() {
                         action = ViewAction::Exit;

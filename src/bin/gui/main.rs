@@ -14,11 +14,14 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod browse;
+mod dnd;
+mod fileops;
 mod fsview;
 mod gather;
 mod home;
 mod icons;
 mod pack;
+mod pane;
 mod places;
 mod quick;
 mod settings;

@@ -18,6 +18,10 @@ pub enum Icon {
     Forward,
     /// 드라이브 (저장 장치)
     Drive,
+    Close,
+    /// 창 나누기 (창 추가)
+    Split,
+    NewFolder,
     /// 검사 (방패 + 체크)
     Check,
 }
@@ -132,6 +136,23 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.rect_stroke(body, 2.0 * u, line, egui::StrokeKind::Middle);
             p.circle_filled(at(17.0, 12.5), 1.3 * u, color);
             p.line_segment([at(6.0, 12.5), at(12.0, 12.5)], line);
+        }
+        Icon::Close => {
+            p.line_segment([at(6.0, 6.0), at(18.0, 18.0)], line);
+            p.line_segment([at(18.0, 6.0), at(6.0, 18.0)], line);
+        }
+        Icon::Split => {
+            let r = Rect::from_min_max(at(3.0, 4.0), at(21.0, 20.0));
+            p.rect_filled(r, 2.0 * u, color.gamma_multiply(0.12));
+            p.rect_stroke(r, 2.0 * u, line, egui::StrokeKind::Middle);
+            p.line_segment([at(12.0, 4.0), at(12.0, 20.0)], line);
+            p.line_segment([at(15.0, 12.0), at(19.0, 12.0)], line);
+            p.line_segment([at(17.0, 10.0), at(17.0, 14.0)], line);
+        }
+        Icon::NewFolder => {
+            folder(p, &at, u, false, line);
+            p.line_segment([at(15.0, 12.5), at(15.0, 18.5)], line);
+            p.line_segment([at(12.0, 15.5), at(18.0, 15.5)], line);
         }
         Icon::Back => {
             p.add(Shape::line(vec![at(15.0, 5.0), at(8.0, 12.0), at(15.0, 19.0)], line));

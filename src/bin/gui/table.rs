@@ -7,6 +7,8 @@ use eframe::egui::{self, Color32, FontId, Rect, Response, Sense, Stroke, Ui, pos
 pub const ROW_H: f32 = 30.0;
 
 pub struct Col {
+    /// 정렬 기준 번호 (보이는 열이 줄어도 그대로)
+    pub id: usize,
     pub title: &'static str,
     /// 0이면 남는 너비를 모두 씀
     pub width: f32,
@@ -42,7 +44,7 @@ pub fn header(ui: &mut Ui, cols: &[Col], sort: &mut Sort) {
             p.rect_filled(cell.shrink(2.0), 4.0, style::hover_fill(ui));
         }
         if resp.clicked() {
-            *sort = if sort.0 == i { (i, !sort.1) } else { (i, true) };
+            *sort = if sort.0 == col.id { (col.id, !sort.1) } else { (col.id, true) };
         }
         let color = style::weak(ui);
         let font = FontId::proportional(12.5);
@@ -52,7 +54,7 @@ pub fn header(ui: &mut Ui, cols: &[Col], sort: &mut Sort) {
             (egui::Align2::LEFT_CENTER, pos2(x0 + 10.0, cell.center().y))
         };
         let text_rect = p.text(pos, anchor, col.title, font, color);
-        if sort.0 == i {
+        if sort.0 == col.id {
             // 정렬 방향 삼각형
             let cx = if col.right { text_rect.left() - 8.0 } else { text_rect.right() + 8.0 };
             let cy = cell.center().y;
@@ -69,7 +71,21 @@ pub fn header(ui: &mut Ui, cols: &[Col], sort: &mut Sort) {
 /// 한 줄. `cells[0]`은 아이콘 옆 이름, 나머지는 각 열 내용.
 /// `name_color`가 있으면 이름 대신 상태 글자 색으로 씀 (마지막 열 강조용 아님).
 pub fn row(ui: &mut Ui, cols: &[Col], icon: Icon, cells: &[(String, Option<Color32>)], selected: bool, idx: usize) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+    row_ex(ui, cols, icon, cells, selected, idx, false)
+}
+
+/// `draggable`이면 끌어서 다른 창으로 옮길 수 있는 줄
+pub fn row_ex(
+    ui: &mut Ui,
+    cols: &[Col],
+    icon: Icon,
+    cells: &[(String, Option<Color32>)],
+    selected: bool,
+    idx: usize,
+    draggable: bool,
+) -> Response {
+    let sense = if draggable { Sense::click_and_drag() } else { Sense::click() };
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), sense);
     let p = ui.painter();
     if selected {
         p.rect_filled(rect, 4.0, style::selection_fill(ui));
@@ -105,4 +121,22 @@ pub fn empty_state(ui: &mut Ui, rect: Rect, icon: Icon, title: &str, sub: &str) 
     icons::paint(p, Rect::from_center_size(c - vec2(0.0, 46.0), vec2(56.0, 56.0)), icon, style::weak(ui));
     p.text(c + vec2(0.0, 6.0), egui::Align2::CENTER_CENTER, title, FontId::proportional(18.0), ui.visuals().text_color());
     p.text(c + vec2(0.0, 32.0), egui::Align2::CENTER_CENTER, sub, FontId::proportional(13.5), style::weak(ui));
+}
+
+/// 끌어다 놓을 대상 표시 (폴더 줄, 창 전체)
+pub fn drop_highlight(ui: &Ui, rect: Rect) {
+    ui.painter().rect_stroke(rect.shrink(1.0), 6.0, Stroke::new(2.0, crate::style::ACCENT), egui::StrokeKind::Inside);
+}
+
+/// 창 너비에 맞춰 보여 줄 열 고르기: 넓으면 이름·날짜·종류·크기, 좁아지면 종류 → 날짜 순으로 숨김.
+/// 돌려주는 값은 `all`에서의 위치들.
+pub fn fit_columns(all: &[Col], width: f32) -> Vec<usize> {
+    // all = [이름, 날짜, 종류, 크기] 순서라고 가정
+    if width >= 560.0 {
+        (0..all.len()).collect()
+    } else if width >= 400.0 {
+        vec![0, 1, 3]
+    } else {
+        vec![0, 3]
+    }
 }
