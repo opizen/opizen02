@@ -8,7 +8,7 @@ use crate::browse::ViewAction;
 use crate::dnd::DragItems;
 use crate::fileops;
 use crate::fsview::{FsAction, FsCommand};
-use crate::icons::{self, Icon};
+use crate::icons::Icon;
 use crate::pane::Pane;
 use crate::places::{self, Place};
 use crate::settings::Settings;
@@ -665,55 +665,6 @@ impl Home {
         });
     }
 
-    fn sidebar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let frame = style::bar(ui, Margin { left: 8, right: 8, top: 10, bottom: 10 });
-        let mut go = None;
-        let current = if self.pane().view.is_none() { Some(self.pane().dir().to_path_buf()) } else { None };
-        egui::Panel::left("places").frame(frame).resizable(false).exact_size(180.0).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                let section = |ui: &mut egui::Ui, title: &str| {
-                    ui.add_space(4.0);
-                    ui.label(RichText::new(title).size(12.0).color(style::weak(ui)));
-                };
-                let mut row = |ui: &mut egui::Ui, p: &Place| {
-                    let is_current = current.as_deref() == Some(p.path.as_path());
-                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::click());
-                    if is_current {
-                        ui.painter().rect_filled(rect, 6.0, style::selection_fill(ui));
-                    } else if resp.hovered() {
-                        ui.painter().rect_filled(rect, 6.0, style::hover_fill(ui));
-                    }
-                    let ir = Rect::from_center_size(rect.left_center() + egui::vec2(16.0, 0.0), egui::vec2(18.0, 18.0));
-                    icons::paint(ui.painter(), ir, if p.drive { Icon::Drive } else { Icon::Folder }, style::weak(ui));
-                    ui.painter().text(
-                        rect.left_center() + egui::vec2(32.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        &p.label,
-                        egui::FontId::proportional(13.5),
-                        ui.visuals().text_color(),
-                    );
-                    if resp.on_hover_text(p.path.display().to_string()).clicked() {
-                        go = Some(p.path.clone());
-                    }
-                };
-                section(ui, "즐겨찾기");
-                for p in &self.favorites {
-                    row(ui, p);
-                }
-                ui.add_space(10.0);
-                section(ui, "드라이브");
-                for p in &self.drives {
-                    row(ui, p);
-                }
-            });
-        });
-        if let Some(p) = go {
-            let hidden = self.settings.show_hidden;
-            self.pane_mut().navigate(p, hidden);
-            self.update_title(ctx);
-        }
-    }
-
     fn settings_panel(&mut self, ui: &mut egui::Ui) {
         let frame = style::bar(ui, Margin::same(16));
         let hidden_before = self.settings.show_hidden;
@@ -1001,7 +952,6 @@ impl eframe::App for Home {
 
         self.toolbar(ui, &ctx);
         self.status_bar(ui, &ctx);
-        self.sidebar(ui, &ctx);
         if self.show_settings {
             self.settings_panel(ui);
         }
@@ -1013,11 +963,12 @@ impl eframe::App for Home {
         let can_paste = self.clipboard.is_some();
         let hidden = self.settings.show_hidden;
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+            let places = crate::pane::Places { favorites: &self.favorites, drives: &self.drives };
             let rects = layout(ui.available_rect_before_wrap(), self.panes.len(), 6.0);
             for (i, (pane, rect)) in self.panes.iter_mut().zip(rects).enumerate() {
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).id_salt(("pane", i)));
                 let active = i == self.active;
-                outs.push(pane.ui(&mut child, i, active, split, &mut self.password, hidden, can_paste));
+                outs.push(pane.ui(&mut child, i, active, split, &mut self.password, hidden, can_paste, &places));
             }
         });
 

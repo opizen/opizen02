@@ -24,6 +24,8 @@ pub enum Icon {
     NewFolder,
     /// 검사 (방패 + 체크)
     Check,
+    /// 왼쪽 바로가기 목록 보이기/숨기기
+    Sidebar,
 }
 
 /// 폴더 아이콘 색 (파일 관리자에서 흔히 쓰는 노란색)
@@ -148,6 +150,12 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.line_segment([at(12.0, 4.0), at(12.0, 20.0)], line);
             p.line_segment([at(15.0, 12.0), at(19.0, 12.0)], line);
             p.line_segment([at(17.0, 10.0), at(17.0, 14.0)], line);
+        }
+        Icon::Sidebar => {
+            let r = Rect::from_min_max(at(3.0, 4.0), at(21.0, 20.0));
+            p.rect_stroke(r, 2.0 * u, line, egui::StrokeKind::Middle);
+            p.rect_filled(Rect::from_min_max(at(3.0, 4.0), at(9.0, 20.0)), 2.0 * u, color.gamma_multiply(0.35));
+            p.line_segment([at(9.0, 4.0), at(9.0, 20.0)], line);
         }
         Icon::NewFolder => {
             folder(p, &at, u, false, line);
