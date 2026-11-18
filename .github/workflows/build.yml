@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   linux:
+    timeout-minutes: 45
     # 22.04에서 빌드해야 오래된 배포판(glibc 2.35+)에서도 Linux 실행 파일이 동작합니다.
     runs-on: ubuntu-22.04
     steps:
@@ -32,18 +33,25 @@ jobs:
             dist/*.tar.gz
 
   windows:
+    timeout-minutes: 45
     # RAR(UnRAR) C++ 코드를 링크하려면 새 MinGW가 필요합니다 (22.04의 MinGW는 __mingwthr_key_dtor 오류).
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: 도구 설치
+        # 패키지 서버가 멈추면 오래 기다리지 않고 실패하도록 (다시 실행하면 대개 해결)
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64 nsis
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
+            gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 nsis
           rustup update stable
           rustup default stable
           rustup target add x86_64-pc-windows-gnu
       - name: Windows 설치 파일 빌드
+        timeout-minutes: 30
         run: ./build-windows.sh
       - uses: actions/upload-artifact@v4
         with:
