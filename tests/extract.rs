@@ -359,3 +359,71 @@ fn here_mode_extracts_in_place_without_overwriting() {
     assert_eq!(s.skipped, 1);
     assert!(!p.join("loose").exists());
 }
+
+// ---------------------------------------------------------------------------
+// 버그 수정: 한글(CP949) 이름, 수정 시간 유지
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cp949_zip_names_are_decoded() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cp949.zip");
+    let names: Vec<String> = list(&fixture, &Options::default()).unwrap().into_iter().map(|e| e.name).collect();
+    assert!(names.contains(&"한글폴더/한글문서.txt".to_string()), "{names:?}");
+    assert!(names.contains(&"영문.txt".to_string()), "{names:?}");
+
+    let tmp = tempdir().unwrap();
+    extract(&fixture, Some(tmp.path()), &Options::default()).unwrap();
+    assert_eq!(fs::read_to_string(tmp.path().join("한글폴더/한글문서.txt")).unwrap(), "안녕");
+}
+
+#[test]
+fn utf8_names_still_work() {
+    assert_eq!(unpack::decode_zip_name("사진/바다.jpg".as_bytes()).as_deref(), Some("사진/바다.jpg"));
+    assert_eq!(unpack::decode_zip_name(&"한글".encode_cp949()).as_deref(), Some("한글"));
+}
+
+trait Cp949 {
+    fn encode_cp949(&self) -> Vec<u8>;
+}
+impl Cp949 for str {
+    fn encode_cp949(&self) -> Vec<u8> {
+        encoding_rs::EUC_KR.encode(self).0.into_owned()
+    }
+}
+
+fn mtime(p: &Path) -> std::time::SystemTime {
+    fs::metadata(p).unwrap().modified().unwrap()
+}
+
+fn close_to(a: std::time::SystemTime, b: std::time::SystemTime, secs: u64) -> bool {
+    let d = a.duration_since(b).or_else(|_| b.duration_since(a)).unwrap();
+    d.as_secs() <= secs
+}
+
+#[test]
+fn modification_times_are_preserved() {
+    use std::time::{Duration, UNIX_EPOCH};
+    let old = UNIX_EPOCH + Duration::from_secs(1_577_934_246); // 2020-01-02 03:04:06 UTC
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    let f = src.join("old.txt");
+    fs::write(&f, "old").unwrap();
+    File::options().write(true).open(&f).unwrap().set_modified(old).unwrap();
+
+    for kind in ArchiveKind::ALL {
+        let arc = tmp.path().join(format!("t{}", kind.ext()));
+        compress(std::slice::from_ref(&f), &arc, kind, None).unwrap();
+        let out = tmp.path().join(format!("out-{}", kind.label()));
+        extract(&arc, Some(&out), &Options::default()).unwrap();
+        // zip은 2초 단위로 저장됨
+        assert!(close_to(mtime(&out.join("old.txt")), old, 2), "{kind:?}: {:?}", mtime(&out.join("old.txt")));
+    }
+
+    // 다른 프로그램이 만든 zip (현지 시각 2020-01-02 03:04:06)
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cp949.zip");
+    let out = tmp.path().join("fixture");
+    extract(&fixture, Some(&out), &Options::default()).unwrap();
+    let t = mtime(&out.join("영문.txt"));
+    assert!(close_to(t, old, 14 * 3600 + 2), "{t:?}"); // 시간대 차이 허용
+}

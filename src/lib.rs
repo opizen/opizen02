@@ -15,6 +15,7 @@ pub const APP_NAME: &str = "opizenAI_Unpack";
 use std::fs::{self, File};
 use std::io::{self, BufReader, Cursor, Read};
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// 압축 스트림 코덱.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,7 +314,7 @@ impl<'a> Sink<'a> {
         Ok(Prepared::Write(path))
     }
 
-    fn file(&mut self, rel: &Path, reader: &mut dyn Read, mode: Option<u32>) -> Result<()> {
+    fn file(&mut self, rel: &Path, reader: &mut dyn Read, mode: Option<u32>, mtime: Option<SystemTime>) -> Result<()> {
         let Prepared::Write(path) = self.prepare(rel)? else {
             return Ok(());
         };
@@ -321,6 +322,10 @@ impl<'a> Sink<'a> {
             File::create(&path).with_context(|| format!("파일 생성 실패: {}", path.display()))?;
         let n = io::copy(reader, &mut out)
             .with_context(|| format!("쓰기 실패: {}", path.display()))?;
+        // 압축 파일에 기록된 수정 시간을 그대로 유지
+        if let Some(t) = mtime {
+            let _ = out.set_modified(t);
+        }
         drop(out);
         set_mode(&path, mode);
         self.stats.files += 1;
@@ -441,7 +446,7 @@ fn write_plain(reader: &mut dyn Read, root: &Path, name: &str, opts: &Options) -
     let root = if root.as_os_str().is_empty() { PathBuf::from(".") } else { root.to_path_buf() };
     let mut sink = Sink::new(&root, opts)?;
     let rel = PathBuf::from(name);
-    sink.file(&rel, reader, None)?;
+    sink.file(&rel, reader, None, None)?;
     sink.stats.output = root.join(rel);
     Ok(sink.stats)
 }
@@ -593,7 +598,8 @@ fn extract_tar(reader: Box<dyn Read>, root: &Path, opts: &Options) -> Result<Sta
             continue;
         }
         let mode = entry.header().mode().ok();
-        sink.file(&rel, &mut entry, mode)?;
+        let mtime = entry.header().mtime().ok().filter(|&t| t > 0).map(|t| UNIX_EPOCH + Duration::from_secs(t));
+        sink.file(&rel, &mut entry, mode, mtime)?;
     }
     Ok(sink.stats)
 }
@@ -613,8 +619,8 @@ fn extract_zip(path: &Path, root: &Path, opts: &Options) -> Result<Stats> {
             zip::result::ZipError::InvalidPassword => anyhow::Error::new(PasswordError { wrong: true }),
             e => anyhow::Error::new(e).context(format!("zip 항목 #{i} 읽기 실패")),
         })?;
-        let raw = file.name().map(|n| n.into_owned()).unwrap_or_else(|_| format!("#{i}"));
-        let Some(rel) = file.enclosed_name().and_then(|p| sanitize(&p.to_string_lossy())) else {
+        let raw = zip_entry_name(&file);
+        let Some(rel) = sanitize(&raw) else {
             sink.warn_unsafe(&raw);
             continue;
         };
@@ -626,10 +632,32 @@ fn extract_zip(path: &Path, root: &Path, opts: &Options) -> Result<Stats> {
             sink.symlink(&rel, &target)?;
         } else {
             let mode = file.unix_mode();
-            sink.file(&rel, &mut file, mode)?;
+            let mtime = file.last_modified().and_then(zip_time_to_system);
+            sink.file(&rel, &mut file, mode, mtime)?;
         }
     }
     Ok(sink.stats)
+}
+
+/// zip 항목 이름. UTF-8이 아니면(한국어 Windows에서 만든 zip 등) CP949로 읽습니다.
+fn zip_entry_name<R: Read>(file: &zip::read::ZipFile<'_, R>) -> String {
+    decode_zip_name(file.name_raw()).unwrap_or_else(|| file.name().map(|n| n.into_owned()).unwrap_or_default())
+}
+
+/// 원본 바이트를 UTF-8 → CP949 순서로 해석. 둘 다 아니면 `None`(zip 크레이트의 CP437 해석 사용).
+pub fn decode_zip_name(raw: &[u8]) -> Option<String> {
+    if let Ok(s) = std::str::from_utf8(raw) {
+        return Some(s.to_owned());
+    }
+    let (s, _, had_errors) = encoding_rs::EUC_KR.decode(raw);
+    (!had_errors).then(|| s.into_owned())
+}
+
+/// zip의 날짜(현지 시각 기준)를 시스템 시간으로
+fn zip_time_to_system(t: zip::DateTime) -> Option<SystemTime> {
+    let pdt = time::PrimitiveDateTime::try_from(t).ok()?;
+    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    Some(SystemTime::from(pdt.assume_offset(offset)))
 }
 
 fn sevenz_password(opts: &Options) -> sevenz_rust2::Password {
@@ -665,7 +693,8 @@ fn extract_7z(path: &Path, root: &Path, opts: &Options) -> Result<Stats> {
         let r = if entry.is_directory() {
             sink.dir(&rel)
         } else {
-            sink.file(&rel, data, None)
+            let mtime = entry.has_last_modified_date.then(|| SystemTime::from(entry.last_modified_date()));
+            sink.file(&rel, data, None, mtime)
         };
         if let Err(e) = r {
             failure = Some(e);
@@ -693,7 +722,7 @@ pub fn list(archive: &Path, opts: &Options) -> Result<Vec<EntryInfo>> {
             for i in 0..zip.len() {
                 let f = zip.by_index_raw(i)?;
                 out.push(EntryInfo {
-                    name: f.name()?.into_owned(),
+                    name: zip_entry_name(&f),
                     size: f.size(),
                     is_dir: f.is_dir(),
                 });

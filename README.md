@@ -8,6 +8,7 @@ GUI 창과 명령줄 도구(`unpack`)도 함께 제공합니다. Rust로 작성�
 | **압축 풀기** | zip, 7z, tar, tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, gz, bz2, xz, zst |
 | **압축하기** | zip, 7z, tar.gz, tar.xz |
 | **암호 (AES-256)** | zip, 7z — 풀기와 압축하기 모두 |
+| **한글 이름** | 한국어 Windows에서 만든 zip(CP949 이름)도 자동으로 인식 |
 
 ## 내려받기
 
