@@ -1,13 +1,13 @@
 //! 메인 창 — 끌어다 놓고 버튼 하나로 압축 풀기 / 압축하기.
 
+use crate::browse::ArchiveView;
 use crate::style::{self, ERR, OK, WARN};
 use eframe::egui::{self, RichText};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use unpack::{
-    ArchiveKind, EntryInfo, Mode, Options, compress, default_archive_path, detect, extract_auto,
-    is_password_error, list,
+    ArchiveKind, Mode, Options, compress, default_archive_path, detect, extract_auto, is_password_error,
 };
 
 #[derive(PartialEq)]
@@ -61,7 +61,8 @@ pub struct Home {
     out_dir: Option<PathBuf>,
     kind: ArchiveKind,
     password: String,
-    viewer: Option<(String, Result<Vec<EntryInfo>, String>)>,
+    /// 압축 파일 내용 보기 화면 (있으면 창 전체에 표시)
+    view: Option<ArchiveView>,
 }
 
 impl Home {
@@ -74,7 +75,7 @@ impl Home {
             out_dir: None,
             kind: ArchiveKind::Zip,
             password: String::new(),
-            viewer: None,
+            view: None,
         };
         app.add(files);
         if auto {
@@ -82,9 +83,8 @@ impl Home {
         } else if let [one] = app.items.as_slice()
             && one.archive
         {
-            // 압축 파일을 더블클릭해서 열면 내용을 바로 보여 줌
-            let entries = list(&one.path, &app.options()).map_err(|e| format!("{e:#}"));
-            app.viewer = Some((crate::file_name(&one.path), entries));
+            // 압축 파일을 더블클릭해서 열면 창 전체에 내용을 보여 줌
+            app.open_view(ctx, 0);
         }
         app
     }
@@ -108,23 +108,41 @@ impl Home {
         Options { password: (!self.password.is_empty()).then(|| self.password.clone()), ..Default::default() }
     }
 
+    fn open_view(&mut self, ctx: &egui::Context, idx: usize) {
+        let v = ArchiveView::open(idx, &self.items[idx].path, self.options().password);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{} - {}", v.title(), unpack::APP_NAME)));
+        self.view = Some(v);
+    }
+
+    fn close_view(&mut self, ctx: &egui::Context) {
+        self.view = None;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(unpack::APP_NAME.into()));
+    }
+
+    /// 목록의 압축 파일을 모두 풉니다 (설정의 저장 위치 또는 원래 위치).
     fn extract(&mut self, ctx: &egui::Context) {
-        let jobs: Vec<(usize, PathBuf)> = self
+        let ids: Vec<usize> = self
             .items
             .iter()
             .enumerate()
             .filter(|(_, it)| it.archive && !matches!(it.status, Status::Done(_)))
-            .map(|(i, it)| (i, it.path.clone()))
+            .map(|(i, _)| i)
             .collect();
+        let out_dir = self.out_dir.clone();
+        self.extract_items(ctx, ids, out_dir);
+    }
+
+    /// `ids` 항목을 `parent`(없으면 각 압축 파일 위치)에 알아서 풀기.
+    fn extract_items(&mut self, ctx: &egui::Context, ids: Vec<usize>, parent: Option<PathBuf>) {
+        let jobs: Vec<(usize, PathBuf)> = ids.into_iter().map(|i| (i, self.items[i].path.clone())).collect();
         if jobs.is_empty() {
             return;
         }
         let opts = self.options();
-        let out_dir = self.out_dir.clone();
         self.run(ctx, move |tx| {
             for (i, path) in jobs {
                 tx.send(Msg::Started(i));
-                let parent = out_dir.clone().unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_default());
+                let parent = parent.clone().unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_default());
                 let status = match extract_auto(&path, &parent, Mode::Smart, &opts) {
                     Ok(s) => Status::Done(s.output),
                     Err(e) if is_password_error(&e) => Status::NeedPassword,
@@ -236,7 +254,12 @@ impl Home {
                 let row = ui.horizontal(|ui| {
                     let name = crate::file_name(&it.path);
                     let label = if it.path.is_dir() { format!("{name}/") } else { name };
-                    ui.label(RichText::new(label).strong()).on_hover_text(it.path.display().to_string());
+                    let name = ui
+                        .add(egui::Label::new(RichText::new(label).strong()).sense(egui::Sense::click()))
+                        .on_hover_text(it.path.display().to_string());
+                    if it.archive && name.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        view = Some(i);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if !self.busy() && ui.add(egui::Button::new("✕").frame(false)).on_hover_text("목록에서 빼기").clicked() {
                             remove = Some(i);
@@ -282,8 +305,7 @@ impl Home {
             }
         });
         if let Some(i) = view {
-            let it = &self.items[i];
-            self.viewer = Some((crate::file_name(&it.path), list(&it.path, &self.options()).map_err(|e| format!("{e:#}"))));
+            self.open_view(ui.ctx(), i);
         }
         if let Some(i) = remove {
             self.items.remove(i);
@@ -299,6 +321,76 @@ impl Home {
                     self.notice = None;
                 }
             });
+        });
+    }
+
+    /// 압축 파일 내용 보기 화면
+    fn view_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let Some(view) = &self.view else { return };
+        let idx = view.idx;
+        let can_extract = matches!(view.contents, crate::browse::Contents::Ok(_)) && !self.busy();
+
+        let bar_frame = style::panel(ctx).inner_margin(egui::Margin { left: 20, right: 20, top: 8, bottom: 16 });
+        egui::Panel::bottom("view-bar").frame(bar_frame).show_separator_line(false).show(ui, |ui| {
+            // 결과 / 진행 / 암호
+            match &self.items[idx].status {
+                Status::Idle => {}
+                Status::Working => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("압축 푸는 중…");
+                    });
+                }
+                Status::Done(out) => {
+                    let out = out.clone();
+                    ui.horizontal(|ui| {
+                        ui.colored_label(OK, format!("압축을 풀었습니다 → {}", crate::file_name(&out)));
+                        if ui.link("폴더 열기").clicked() {
+                            crate::open_in_explorer(&out);
+                        }
+                    });
+                }
+                Status::NeedPassword => {
+                    let mut retry = false;
+                    ui.horizontal(|ui| {
+                        ui.colored_label(WARN, "암호가 필요합니다");
+                        let r = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).desired_width(180.0));
+                        retry |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        retry |= ui.add_enabled(!self.password.is_empty(), egui::Button::new("다시 시도")).clicked();
+                    });
+                    if retry && !self.password.is_empty() {
+                        self.extract_items(ctx, vec![idx], None);
+                    }
+                }
+                Status::Failed(e) => {
+                    ui.colored_label(ERR, format!("실패: {e}"));
+                }
+            }
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new("← 목록").frame(false)).clicked() {
+                    self.close_view(ctx);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_enabled(can_extract, style::secondary("다른 위치에 풀기…")).clicked()
+                        && let Some(dir) = rfd::FileDialog::new().set_title("풀 위치").pick_folder()
+                    {
+                        self.extract_items(ctx, vec![idx], Some(dir));
+                    }
+                    if ui.add_enabled(can_extract, style::primary("알아서 풀기")).clicked() {
+                        self.extract_items(ctx, vec![idx], None);
+                    }
+                });
+            });
+        });
+
+        let main_frame = style::panel(ctx).inner_margin(egui::Margin { left: 20, right: 20, top: 16, bottom: 8 });
+        egui::CentralPanel::default().frame(main_frame).show(ui, |ui| {
+            let Some(view) = self.view.as_mut() else { return };
+            view.header_ui(ui);
+            if view.list_ui(ui, &mut self.password) {
+                let pw = Some(self.password.clone());
+                view.reload(pw);
+            }
         });
     }
 
@@ -356,6 +448,11 @@ impl eframe::App for Home {
         }
         let hovering = ctx.input(|i| !i.raw.hovered_files.is_empty());
 
+        if self.view.is_some() {
+            self.view_ui(ui, &ctx);
+            return;
+        }
+
         // 하단 막대: 결과 한 줄 + 설정 + 버튼 두 개
         let bar_frame = style::panel(&ctx).inner_margin(egui::Margin { left: 20, right: 20, top: 8, bottom: 16 });
         egui::Panel::bottom("bar").frame(bar_frame).show_separator_line(false).show(ui, |ui| {
@@ -406,37 +503,5 @@ impl eframe::App for Home {
             }
         });
 
-        let mut close = false;
-        if let Some((name, entries)) = &self.viewer {
-            let mut open = true;
-            egui::Window::new(name.as_str())
-                .open(&mut open)
-                .collapsible(false)
-                .default_size([420.0, 320.0])
-                .show(&ctx, |ui| match entries {
-                    Err(e) => {
-                        ui.colored_label(ERR, e);
-                    }
-                    Ok(list) => {
-                        ui.weak(format!("{}개 항목", list.len()));
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            for e in list {
-                                ui.horizontal(|ui| {
-                                    ui.label(&e.name);
-                                    if !e.is_dir {
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            ui.weak(crate::human_size(e.size));
-                                        });
-                                    }
-                                });
-                            }
-                        });
-                    }
-                });
-            close = !open;
-        }
-        if close {
-            self.viewer = None;
-        }
     }
 }

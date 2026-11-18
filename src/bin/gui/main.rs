@@ -13,6 +13,7 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod browse;
 mod gather;
 mod home;
 mod pack;
@@ -100,8 +101,8 @@ fn main() -> eframe::Result {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(unpack::APP_NAME)
-        .with_inner_size([560.0, 460.0])
-        .with_min_inner_size([440.0, 380.0])
+        .with_inner_size([620.0, 520.0])
+        .with_min_inner_size([460.0, 400.0])
         .with_drag_and_drop(true);
     if let Some(icon) = icon {
         viewport = viewport.with_icon(icon);
