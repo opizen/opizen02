@@ -3,7 +3,7 @@
 //! 해제가 모두 성공하면 잠시 뒤 저절로 닫히고, 실패하거나 경고가 있으면 열린 채로
 //! 이유를 보여 줍니다. 암호가 필요한 파일은 이 창에서 바로 암호를 입력해 다시 시도합니다.
 
-use eframe::egui::{self, Color32};
+use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -140,7 +140,7 @@ impl eframe::App for QuickApp {
             }
         }
 
-        egui::CentralPanel::default_margins().show(ui, |ui| {
+        egui::CentralPanel::default().frame(crate::style::panel(&ctx)).show(ui, |ui| {
             let total = self.jobs.len();
             let done = self
                 .jobs
@@ -157,7 +157,7 @@ impl eframe::App for QuickApp {
                     ui.label(format!("{done} / {total}"));
                 });
             });
-            ui.add(egui::ProgressBar::new(done as f32 / total.max(1) as f32).animate(self.worker.is_some()));
+            ui.add(egui::ProgressBar::new(done as f32 / total.max(1) as f32).animate(self.worker.is_some()).desired_height(6.0));
             ui.add_space(4.0);
 
             egui::ScrollArea::vertical().max_height(180.0).auto_shrink([false, true]).show(ui, |ui| {
@@ -172,13 +172,13 @@ impl eframe::App for QuickApp {
                                 ui.spinner();
                             }
                             State::Done { .. } => {
-                                ui.colored_label(Color32::LIGHT_GREEN, "✔");
+                                ui.colored_label(crate::style::OK, "✔");
                             }
                             State::NeedPassword { .. } => {
-                                ui.colored_label(Color32::YELLOW, "🔒");
+                                ui.colored_label(crate::style::WARN, "🔒");
                             }
                             State::Failed(_) => {
-                                ui.colored_label(Color32::LIGHT_RED, "✖");
+                                ui.colored_label(crate::style::ERR, "✖");
                             }
                         }
                         ui.label(&name);
@@ -187,18 +187,18 @@ impl eframe::App for QuickApp {
                                 let shown = output.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                                 ui.weak(format!("→ {shown}")).on_hover_text(output.display().to_string());
                                 if !warnings.is_empty() {
-                                    ui.colored_label(Color32::YELLOW, format!("경고 {}개", warnings.len()))
+                                    ui.colored_label(crate::style::WARN, format!("경고 {}개", warnings.len()))
                                         .on_hover_text(warnings.join("\n"));
                                 }
                             }
                             State::NeedPassword { wrong: true } => {
-                                ui.colored_label(Color32::YELLOW, "암호가 올바르지 않습니다");
+                                ui.colored_label(crate::style::WARN, "암호가 올바르지 않습니다");
                             }
                             State::NeedPassword { wrong: false } => {
-                                ui.colored_label(Color32::YELLOW, "암호가 필요합니다");
+                                ui.colored_label(crate::style::WARN, "암호가 필요합니다");
                             }
                             State::Failed(e) => {
-                                ui.colored_label(Color32::LIGHT_RED, e);
+                                ui.colored_label(crate::style::ERR, e);
                             }
                             _ => {}
                         }
@@ -223,7 +223,7 @@ impl eframe::App for QuickApp {
                     }
                     submit |= resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     submit |= ui
-                        .add_enabled(!self.password.is_empty(), egui::Button::new("다시 시도"))
+                        .add_enabled(!self.password.is_empty(), crate::style::primary("다시 시도").min_size(egui::vec2(90.0, 30.0)))
                         .clicked();
                 });
                 if submit && !self.password.is_empty() {

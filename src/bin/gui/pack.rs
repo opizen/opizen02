@@ -3,7 +3,7 @@
 //! - `--zip` / `--7z`: 바로 압축하고, 끝나면 잠시 뒤 저절로 닫힘
 //! - `--compress`: 형식·이름·암호·저장 위치를 고른 뒤 압축
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -79,14 +79,14 @@ impl PackApp {
     }
 
     fn ask_ui(&mut self, ui: &mut egui::Ui) {
-        ui.strong(format!("압축하기 — {}", self.summary()));
+        ui.heading(format!("압축하기 · {}", self.summary()));
         ui.add_space(6.0);
         let mut go = false;
         egui::Grid::new("pack").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
             ui.label("형식");
             ui.horizontal(|ui| {
                 for k in ArchiveKind::ALL {
-                    ui.radio_value(&mut self.kind, k, k.label());
+                    ui.selectable_value(&mut self.kind, k, k.label());
                 }
             });
             ui.end_row();
@@ -101,12 +101,13 @@ impl PackApp {
 
             ui.label("저장 위치");
             ui.horizontal(|ui| {
-                if ui.button("찾아보기…").clicked()
+                let shown = self.folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.folder.display().to_string());
+                ui.label(shown).on_hover_text(self.folder.display().to_string());
+                if ui.link("변경").clicked()
                     && let Some(dir) = rfd::FileDialog::new().set_directory(&self.folder).pick_folder()
                 {
                     self.folder = dir;
                 }
-                ui.label(self.folder.display().to_string());
             });
             ui.end_row();
 
@@ -116,7 +117,7 @@ impl PackApp {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.password)
                             .password(true)
-                            .hint_text("없으면 비워 두세요 (AES-256)")
+                            .hint_text("없으면 비워 두세요")
                             .desired_width(220.0),
                     );
                     if !self.password.is_empty() {
@@ -137,17 +138,17 @@ impl PackApp {
         let exists = out.exists();
         let valid = !self.stem.trim().is_empty() && !self.stem.contains(['/', '\\']);
         if !pw_ok {
-            ui.colored_label(Color32::YELLOW, "암호가 서로 다릅니다");
+            ui.colored_label(crate::style::WARN, "암호가 서로 다릅니다");
         } else if exists {
-            ui.colored_label(Color32::YELLOW, "같은 이름의 파일이 이미 있습니다");
+            ui.colored_label(crate::style::WARN, "같은 이름의 파일이 이미 있습니다");
         }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let can = pw_ok && !exists && valid;
-            if ui.add_enabled(can, egui::Button::new(RichText::new("  압축  ").strong())).clicked() || (go && can) {
+            if ui.add_enabled(can, crate::style::primary("압축")).clicked() || (go && can) {
                 self.start(ui.ctx());
             }
-            if ui.button("취소").clicked() {
+            if ui.add(crate::style::secondary("취소")).clicked() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
@@ -166,7 +167,7 @@ impl eframe::App for PackApp {
             };
         }
 
-        egui::CentralPanel::default_margins().show(ui, |ui| match &self.phase {
+        egui::CentralPanel::default().frame(crate::style::panel(&ctx)).show(ui, |ui| match &self.phase {
             Phase::Ask => self.ask_ui(ui),
             Phase::Working(_) => {
                 ui.strong(format!("{} 압축 중…", self.kind.label()));
@@ -175,12 +176,12 @@ impl eframe::App for PackApp {
                     ui.spinner();
                     ui.label(format!("{} → {}", self.summary(), self.output().file_name().unwrap_or_default().to_string_lossy()));
                 });
-                ui.add(egui::ProgressBar::new(0.5).animate(true));
+                ui.add(egui::ProgressBar::new(0.5).animate(true).desired_height(6.0));
             }
             Phase::Done(s, at) => {
                 let size = std::fs::metadata(&s.output).map(|m| m.len()).unwrap_or(0);
                 ui.horizontal(|ui| {
-                    ui.colored_label(Color32::LIGHT_GREEN, "✔");
+                    ui.colored_label(crate::style::OK, "✔");
                     ui.strong(s.output.file_name().unwrap_or_default().to_string_lossy());
                 });
                 ui.label(format!(
@@ -191,7 +192,7 @@ impl eframe::App for PackApp {
                     crate::human_size(size)
                 ));
                 for w in &s.warnings {
-                    ui.colored_label(Color32::YELLOW, w);
+                    ui.colored_label(crate::style::WARN, w);
                 }
                 ui.add_space(4.0);
                 let out = s.output.clone();
@@ -219,7 +220,7 @@ impl eframe::App for PackApp {
                 }
             }
             Phase::Failed(e) => {
-                ui.colored_label(Color32::LIGHT_RED, "✖ 압축하지 못했습니다");
+                ui.colored_label(crate::style::ERR, "✖ 압축하지 못했습니다");
                 ui.label(e);
                 if ui.button("닫기").clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
