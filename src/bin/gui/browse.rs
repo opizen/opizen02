@@ -68,11 +68,11 @@ pub enum ViewAction {
     Open(String),
     /// 선택한 항목 풀기 (`true`면 위치 고르기)
     ExtractSelected { choose: bool },
+    /// 최상위에서 뒤로 → 압축 파일 밖(폴더)으로
+    Exit,
 }
 
 pub struct ArchiveView {
-    /// Home 목록에서의 위치
-    pub idx: usize,
     pub path: PathBuf,
     format: String,
     file_size: u64,
@@ -88,11 +88,10 @@ pub struct ArchiveView {
 }
 
 impl ArchiveView {
-    pub fn open(idx: usize, path: &Path, password: Option<String>) -> Self {
+    pub fn open(path: &Path, password: Option<String>) -> Self {
         let format = detect(path).map(|f| f.to_string().to_uppercase()).unwrap_or_default();
         let file_size = unpack::archive_parts(path).iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
         let mut v = Self {
-            idx,
             path: path.to_path_buf(),
             format,
             file_size,
@@ -237,11 +236,12 @@ impl ArchiveView {
             Contents::Ok(entries) => {
                 let mut nodes = children(entries, &self.cur);
                 sort_nodes(&mut nodes, self.sort);
+                // 폴더 보기와 같은 순서: 이름 / 수정한 날짜 / 종류 / 크기
                 let cols = [
                     Col { title: "이름", width: 0.0, right: false },
-                    Col { title: "크기", width: 100.0, right: true },
-                    Col { title: "종류", width: 110.0, right: false },
                     Col { title: "수정한 날짜", width: 140.0, right: false },
+                    Col { title: "종류", width: 120.0, right: false },
+                    Col { title: "크기", width: 90.0, right: true },
                 ];
                 table::header(ui, &cols, &mut self.sort);
                 let mut enter = None;
@@ -263,7 +263,7 @@ impl ArchiveView {
                         };
                         let date = n.modified.map(crate::fmt_time).unwrap_or_default();
                         let sel = self.selected.contains(&n.name);
-                        let cells = [(n.name.clone(), None), (crate::human_size(n.size), None), (kind, None), (date, None)];
+                        let cells = [(n.name.clone(), None), (date, None), (kind, None), (crate::human_size(n.size), None)];
                         let r = table::row(ui, &cols, icon, &cells, sel, i + usize::from(!self.cur.is_empty()));
                         if r.clicked() {
                             self.click(&nodes, &n.name, mods);
@@ -315,8 +315,12 @@ impl ArchiveView {
                         i.modifiers.command && i.key_pressed(egui::Key::A),
                     )
                 });
-                if back && !self.cur.is_empty() {
-                    up = true;
+                if back {
+                    if self.cur.is_empty() {
+                        action = ViewAction::Exit;
+                    } else {
+                        up = true;
+                    }
                 }
                 if esc {
                     self.clear_selection();
@@ -371,9 +375,9 @@ fn sort_nodes(nodes: &mut [Node], (col, asc): table::Sort) {
     nodes.sort_by(|a, b| {
         let dirs = b.is_dir.cmp(&a.is_dir); // 폴더는 항상 위
         let ord = match col {
-            1 => a.size.cmp(&b.size),
+            1 => a.modified.cmp(&b.modified),
             2 => kind_of(&a.name).cmp(&kind_of(&b.name)),
-            3 => a.modified.cmp(&b.modified),
+            3 => a.size.cmp(&b.size),
             _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         };
         dirs.then(if asc { ord } else { ord.reverse() })

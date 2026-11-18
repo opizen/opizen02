@@ -1,6 +1,6 @@
 //! 직접 그리는 벡터 아이콘 — 글꼴(이모지)에 의존하지 않아 어느 OS에서나 똑같이 보입니다.
 
-use eframe::egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, pos2, vec2};
+use eframe::egui::{self, Color32, Painter, Pos2, Rect, Shape, Stroke, pos2, vec2};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Icon {
@@ -15,6 +15,9 @@ pub enum Icon {
     Lock,
     Up,
     Back,
+    Forward,
+    /// 드라이브 (저장 장치)
+    Drive,
     /// 검사 (방패 + 체크)
     Check,
 }
@@ -119,6 +122,16 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             let shield = vec![at(12.0, 2.0), at(20.0, 5.0), at(19.0, 14.0), at(12.0, 22.0), at(5.0, 14.0), at(4.0, 5.0)];
             p.add(Shape::convex_polygon(shield, color.gamma_multiply(0.12), line));
             p.add(Shape::line(vec![at(8.0, 12.0), at(11.0, 15.0), at(16.5, 9.0)], line));
+        }
+        Icon::Forward => {
+            p.add(Shape::line(vec![at(9.0, 5.0), at(16.0, 12.0), at(9.0, 19.0)], line));
+        }
+        Icon::Drive => {
+            let body = Rect::from_min_max(at(3.0, 8.0), at(21.0, 17.0));
+            p.rect_filled(body, 2.0 * u, color.gamma_multiply(0.15));
+            p.rect_stroke(body, 2.0 * u, line, egui::StrokeKind::Middle);
+            p.circle_filled(at(17.0, 12.5), 1.3 * u, color);
+            p.line_segment([at(6.0, 12.5), at(12.0, 12.5)], line);
         }
         Icon::Back => {
             p.add(Shape::line(vec![at(15.0, 5.0), at(8.0, 12.0), at(15.0, 19.0)], line));

@@ -419,6 +419,12 @@ fn input_size(path: &Path) -> u64 {
 // 형식 감지
 // ---------------------------------------------------------------------------
 
+/// 파일 이름(확장자)만 보고 압축 파일인지 빠르게 판단합니다 (파일을 열지 않음, 폴더 목록용).
+pub fn is_archive_name(path: &Path) -> bool {
+    let name_path = split_parts(path).map(|(inner, _)| inner).unwrap_or_else(|| path.to_path_buf());
+    detect_by_name(&name_path).is_some()
+}
+
 /// 확장자와 매직 바이트로 형식을 감지합니다. 분할 파일(`.001`)도 알아봅니다.
 pub fn detect(path: &Path) -> Result<Format> {
     let name_path = split_parts(path).map(|(inner, _)| inner).unwrap_or_else(|| path.to_path_buf());

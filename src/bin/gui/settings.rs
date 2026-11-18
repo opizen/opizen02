@@ -16,11 +16,15 @@ pub struct Settings {
     pub level: Level,
     /// 문제없이 풀리면 압축 파일을 휴지통으로
     pub trash_after: bool,
+    /// 마지막으로 보던 폴더
+    pub last_dir: Option<PathBuf>,
+    /// 숨김 파일 표시
+    pub show_hidden: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { out_dir: None, kind: ArchiveKind::Zip, level: Level::Normal, trash_after: false }
+        Self { out_dir: None, kind: ArchiveKind::Zip, level: Level::Normal, trash_after: false, last_dir: None, show_hidden: false }
     }
 }
 
@@ -47,6 +51,8 @@ impl Settings {
                 "kind" => s.kind = ArchiveKind::ALL.into_iter().find(|k| k.label() == v).unwrap_or(s.kind),
                 "level" => s.level = Level::ALL.into_iter().find(|l| format!("{l:?}") == v).unwrap_or(s.level),
                 "trash_after" => s.trash_after = v == "true",
+                "last_dir" if !v.is_empty() => s.last_dir = Some(PathBuf::from(v)).filter(|p| p.is_dir()),
+                "show_hidden" => s.show_hidden = v == "true",
                 _ => {}
             }
         }
@@ -60,11 +66,13 @@ impl Settings {
         }
         let out = self.out_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default();
         let text = format!(
-            "# {} 설정\nout_dir={out}\nkind={}\nlevel={:?}\ntrash_after={}\n",
+            "# {} 설정\nout_dir={out}\nkind={}\nlevel={:?}\ntrash_after={}\nlast_dir={}\nshow_hidden={}\n",
             unpack::APP_NAME,
             self.kind.label(),
             self.level,
-            self.trash_after
+            self.trash_after,
+            self.last_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default(),
+            self.show_hidden
         );
         let _ = std::fs::write(p, text);
     }
