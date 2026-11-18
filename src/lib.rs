@@ -110,8 +110,10 @@ pub fn is_password_error(e: &anyhow::Error) -> bool {
 /// 우클릭 메뉴 등에서 쓰는 해제 방식.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// 최상위 항목이 하나면 그대로, 여러 개면 압축 파일 이름의 폴더에 해제
+    /// 알아서 풀기: 최상위 항목이 하나면 그대로, 여러 개면 압축 파일 이름의 폴더에 해제
     Smart,
+    /// 여기에 풀기: 폴더를 만들지 않고 그대로 해제 (이미 있는 파일은 건너뜀)
+    Here,
     /// 항상 압축 파일 이름의 새 폴더에 해제
     NewFolder,
 }
@@ -478,6 +480,7 @@ pub fn unique_path(path: &Path) -> PathBuf {
 
 /// 우클릭 메뉴용 해제: 기존 파일을 덮어쓰지 않고, 이름이 겹치면 `(2)`를 붙입니다.
 ///
+/// - [`Mode::Here`]: `parent`에 그대로 풉니다. 이미 있는 파일은 덮어쓰지 않고 건너뜁니다.
 /// - [`Mode::Smart`]: 임시 폴더에 푼 뒤, 최상위 항목이 하나뿐이면 `parent`로 바로 옮기고
 ///   여러 개면 압축 파일 이름의 폴더로 정리합니다.
 /// - [`Mode::NewFolder`]: 항상 압축 파일 이름의 새 폴더에 풉니다.
@@ -489,6 +492,12 @@ pub fn extract_auto(archive: &Path, parent: &Path, mode: Mode, opts: &Options) -
         let target = unique_path(&parent.join(&base));
         let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(base);
         return write_plain(&mut reader, parent, &name, opts);
+    }
+
+    if mode == Mode::Here {
+        let mut stats = extract(archive, Some(parent), opts)?;
+        stats.output = parent.to_path_buf();
+        return Ok(stats);
     }
 
     if mode == Mode::NewFolder {

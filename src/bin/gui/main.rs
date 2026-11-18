@@ -3,7 +3,8 @@
 //! 명령줄 인자로 파일·폴더 경로를 받으면 목록에 추가합니다.
 //!
 //! 파일 관리자 우클릭 메뉴에서 쓰는 옵션:
-//! - `--here <파일>…`     : "여기에 압축 풀기" (스마트 해제, 작은 진행 창)
+//! - `--smart <파일>…`    : "알아서 풀기" (폴더가 하나면 그대로, 아니면 파일 이름 폴더로)
+//! - `--here <파일>…`     : "여기에 압축 풀기" (폴더를 만들지 않고 그대로)
 //! - `--folder <파일>…`   : "새 폴더에 압축 풀기"
 //! - `--auto <파일>…`     : 전체 창을 열고 바로 해제 시작
 //! - `--zip <항목>…`      : "ZIP으로 압축" (선택한 항목 전체를 하나로)
@@ -35,7 +36,8 @@ fn main() -> eframe::Result {
     for arg in std::env::args_os().skip(1) {
         match arg.to_str() {
             Some("--auto") => launch = Launch::Main { auto: true },
-            Some("--here") => launch = Launch::Extract(Mode::Smart),
+            Some("--smart") => launch = Launch::Extract(Mode::Smart),
+            Some("--here") => launch = Launch::Extract(Mode::Here),
             Some("--folder") => launch = Launch::Extract(Mode::NewFolder),
             Some("--zip") => launch = Launch::Pack(Some(ArchiveKind::Zip)),
             Some("--7z") => launch = Launch::Pack(Some(ArchiveKind::SevenZ)),
@@ -62,7 +64,11 @@ fn main() -> eframe::Result {
 
     match launch {
         Launch::Extract(mode) if !files.is_empty() => {
-            let tag = if mode == Mode::Smart { "HERE" } else { "FOLDER" };
+            let tag = match mode {
+                Mode::Smart => "SMART",
+                Mode::Here => "HERE",
+                Mode::NewFolder => "FOLDER",
+            };
             let Some(files) = gather::gather(tag, files) else { return Ok(()) };
             let height = (200.0 + 30.0 * files.len().min(7) as f32).min(420.0);
             return eframe::run_native(

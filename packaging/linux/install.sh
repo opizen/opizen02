@@ -29,14 +29,20 @@ if [ "$PREFIX" = "$HOME/.local" ]; then
   SCRIPTS="$HOME/.local/share/nautilus/scripts/opizenAI_Unpack"
   mkdir -p "$SCRIPTS"
   mk() { printf '#!/bin/sh\nexec "%s" %s "$@"\n' "$BIN/opizenAI_Unpack" "$2" > "$SCRIPTS/$1"; chmod 755 "$SCRIPTS/$1"; }
-  mk "여기에 압축 풀기" --here
-  mk "새 폴더에 압축 풀기" --folder
-  mk "ZIP으로 압축" --zip
-  mk "7Z로 압축" --7z
-  mk "압축하기..." --compress
+  mk "1 알아서 풀기" --smart
+  mk "2 여기에 압축 풀기" --here
+  mk "3 새 폴더에 압축 풀기" --folder
+  mk "4 ZIP으로 압축" --zip
+  mk "5 7Z로 압축" --7z
+  mk "6 압축하기..." --compress
 fi
 
 command -v update-desktop-database >/dev/null && update-desktop-database -q "$SHARE/applications" || true
+
+# zip 파일을 opizenAI_Unpack으로 열도록 연결 (사용자 설치일 때, NO_ASSOC=1 이면 건너뜀)
+if [ "$PREFIX" = "$HOME/.local" ] && [ -z "${NO_ASSOC:-}" ] && command -v xdg-mime >/dev/null; then
+  xdg-mime default opizenAI_Unpack.desktop application/zip && echo "zip 파일 연결: opizenAI_Unpack"
+fi
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$SHARE/icons/hicolor" 2>/dev/null || true
 
 echo "설치 완료: $BIN/opizenAI_Unpack"

@@ -79,6 +79,12 @@ impl Home {
         app.add(files);
         if auto {
             app.extract(ctx);
+        } else if let [one] = app.items.as_slice()
+            && one.archive
+        {
+            // 압축 파일을 더블클릭해서 열면 내용을 바로 보여 줌
+            let entries = list(&one.path, &app.options()).map_err(|e| format!("{e:#}"));
+            app.viewer = Some((crate::file_name(&one.path), entries));
         }
         app
     }

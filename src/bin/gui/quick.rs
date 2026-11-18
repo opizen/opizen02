@@ -148,7 +148,8 @@ impl eframe::App for QuickApp {
                 .filter(|j| !matches!(j.state, State::Waiting | State::Working))
                 .count();
             let title = match self.mode {
-                Mode::Smart => "여기에 압축 풀기",
+                Mode::Smart => "알아서 풀기",
+                Mode::Here => "여기에 압축 풀기",
                 Mode::NewFolder => "새 폴더에 압축 풀기",
             };
             ui.horizontal(|ui| {

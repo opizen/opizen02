@@ -50,6 +50,7 @@ class OpizenAIUnpackMenu(GObject.GObject, Nautilus.MenuProvider):
         top.set_submenu(sub)
 
         if all(p.lower().endswith(ARCHIVE_EXT) for p in paths):
+            sub.append_item(self._item("Smart", "알아서 풀기", ["--smart"], paths))
             sub.append_item(self._item("Here", "여기에 압축 풀기", ["--here"], paths))
             sub.append_item(self._item("Folder", "새 폴더에 압축 풀기", ["--folder"], paths))
         sub.append_item(self._item("Zip", "ZIP으로 압축", ["--zip"], paths))

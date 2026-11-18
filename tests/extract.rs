@@ -344,3 +344,18 @@ fn default_archive_names() {
     fs::write(p.join("사진.tar.gz"), "").unwrap();
     assert_eq!(default_archive_path(&inputs[..1], ArchiveKind::TarGz), p.join("사진 (2).tar.gz"));
 }
+
+#[test]
+fn here_mode_extracts_in_place_without_overwriting() {
+    let tmp = tempdir().unwrap();
+    let p = tmp.path();
+    let arc = p.join("loose.zip");
+    zip_with(&arc, &[("a.txt", "new A"), ("b.txt", "B")]);
+    fs::write(p.join("a.txt"), "old A").unwrap();
+    let s = extract_auto(&arc, p, Mode::Here, &Options::default()).unwrap();
+    assert_eq!(s.output, p);
+    assert_eq!(fs::read_to_string(p.join("a.txt")).unwrap(), "old A");
+    assert_eq!(fs::read_to_string(p.join("b.txt")).unwrap(), "B");
+    assert_eq!(s.skipped, 1);
+    assert!(!p.join("loose").exists());
+}
