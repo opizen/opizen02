@@ -1,6 +1,6 @@
 //! `unpack` 라이브러리: 여러 압축 형식을 안전하게 해제합니다.
 //!
-//! 지원 형식: zip, 7z, tar, tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst,
+//! 지원 형식: zip, 7z, rar(풀기만), tar, tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst,
 //! 단일 스트림 gz / bz2 / xz / zst.
 //!
 //! 모든 항목 경로는 대상 폴더 밖으로 나갈 수 없도록 검사됩니다(Zip Slip 방지).
@@ -31,6 +31,8 @@ pub enum Codec {
 pub enum Format {
     Zip,
     SevenZ,
+    /// RAR (풀기만 지원, 분할 압축 포함)
+    Rar,
     /// tar (선택적으로 압축됨)
     Tar(Option<Codec>),
     /// 단일 압축 스트림. 내용이 tar이면 자동으로 tar로 처리합니다.
@@ -42,6 +44,7 @@ impl std::fmt::Display for Format {
         let s = match self {
             Format::Zip => "zip",
             Format::SevenZ => "7z",
+            Format::Rar => "rar",
             Format::Tar(None) => "tar",
             Format::Tar(Some(Codec::Gz)) => "tar.gz",
             Format::Tar(Some(Codec::Bz2)) => "tar.bz2",
@@ -151,6 +154,7 @@ fn detect_by_name(path: &Path) -> Option<Format> {
         (".zip", Format::Zip),
         (".jar", Format::Zip),
         (".7z", Format::SevenZ),
+        (".rar", Format::Rar),
         (".gz", Format::Stream(Codec::Gz)),
         (".bz2", Format::Stream(Codec::Bz2)),
         (".xz", Format::Stream(Codec::Xz)),
@@ -168,6 +172,8 @@ fn detect_by_magic(head: &[u8]) -> Option<Format> {
         Some(Format::Zip)
     } else if starts(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]) {
         Some(Format::SevenZ)
+    } else if starts(b"Rar!\x1a\x07") {
+        Some(Format::Rar)
     } else if starts(&[0x1F, 0x8B]) {
         Some(Format::Stream(Codec::Gz))
     } else if starts(b"BZh") {
@@ -384,6 +390,18 @@ fn make_symlink(target: &str, path: &Path) -> Result<()> {
 pub fn base_name(path: &Path) -> String {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let lower = name.to_lowercase();
+    // 분할 RAR: 이름.part1.rar → 이름
+    if let Some(stem) = lower.strip_suffix(".rar").filter(|s| !s.is_empty()) {
+        let mut keep = stem.len();
+        if let Some(i) = stem.rfind(".part")
+            && i > 0
+            && stem[i + 5..].chars().all(|c| c.is_ascii_digit())
+            && stem.len() > i + 5
+        {
+            keep = i;
+        }
+        return name[..keep].to_string();
+    }
     let exts = [
         ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tgz", ".tbz2", ".tbz", ".txz", ".tzst",
         ".tar", ".zip", ".jar", ".7z", ".gz", ".bz2", ".xz", ".zst",
@@ -420,6 +438,7 @@ fn extract_impl(archive: &Path, dest: Option<&Path>, parent: PathBuf, opts: &Opt
         Format::SevenZ => {
             extract_7z(archive, &dest.map(PathBuf::from).unwrap_or_else(default_dir), opts)
         }
+        Format::Rar => extract_rar(archive, &dest.map(PathBuf::from).unwrap_or_else(default_dir), opts),
         Format::Tar(codec) => {
             let reader = decoder(codec, open_buffered(archive)?)?;
             extract_tar(reader, &dest.map(PathBuf::from).unwrap_or_else(default_dir), opts)
@@ -710,6 +729,96 @@ fn extract_7z(path: &Path, root: &Path, opts: &Options) -> Result<Stats> {
 }
 
 // ---------------------------------------------------------------------------
+// RAR (UnRAR 라이브러리 사용 — 풀기만 가능)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "rar")]
+fn rar_error(e: unrar::error::UnrarError, opts: &Options, encrypted: bool) -> anyhow::Error {
+    use unrar::error::Code;
+    match e.code {
+        Code::MissingPassword => anyhow::Error::new(PasswordError { wrong: false }),
+        Code::BadPassword => anyhow::Error::new(PasswordError { wrong: true }),
+        // RAR4는 암호가 틀리면 데이터 오류로 나옴
+        Code::BadData if encrypted && opts.password.is_some() => anyhow::Error::new(PasswordError { wrong: true }),
+        _ => anyhow::anyhow!("RAR 처리 실패: {e}"),
+    }
+}
+
+#[cfg(feature = "rar")]
+fn rar_open<'a>(path: &'a Path, opts: &'a Options) -> unrar::Archive<'a> {
+    match &opts.password {
+        Some(pw) => unrar::Archive::with_password(path, pw.as_str()),
+        None => unrar::Archive::new(path),
+    }
+}
+
+#[cfg(feature = "rar")]
+fn extract_rar(path: &Path, root: &Path, opts: &Options) -> Result<Stats> {
+    let mut sink = Sink::new(root, opts)?;
+    let mut cur = rar_open(path, opts).open_for_processing().map_err(|e| rar_error(e, opts, true))?;
+    while let Some(header) = cur.read_header().map_err(|e| rar_error(e, opts, true))? {
+        let entry = header.entry();
+        let raw = entry.filename.to_string_lossy().replace('\\', "/");
+        let encrypted = entry.is_encrypted();
+        let size = entry.unpacked_size;
+        let is_dir = entry.is_directory();
+        cur = match sanitize(&raw) {
+            None => {
+                sink.warn_unsafe(&raw);
+                header.skip()
+            }
+            Some(rel) if is_dir => {
+                sink.dir(&rel)?;
+                header.skip()
+            }
+            Some(rel) => match sink.prepare(&rel)? {
+                Prepared::Skip => header.skip(),
+                Prepared::Write(target) => {
+                    let next = header.extract_to(&target).map_err(|e| rar_error(e, opts, encrypted))?;
+                    sink.stats.files += 1;
+                    sink.stats.bytes += size;
+                    if opts.verbose {
+                        println!("  {}", rel.display());
+                    }
+                    Ok(next)
+                }
+            },
+        }
+        .map_err(|e| rar_error(e, opts, encrypted))?;
+    }
+    Ok(sink.stats)
+}
+
+#[cfg(feature = "rar")]
+fn list_rar(path: &Path, opts: &Options) -> Result<Vec<EntryInfo>> {
+    let archive = rar_open(path, opts).open_for_listing().map_err(|e| rar_error(e, opts, true))?;
+    let mut out = Vec::new();
+    for entry in archive {
+        let e = entry.map_err(|e| rar_error(e, opts, true))?;
+        // 분할 압축에서 이어지는 조각은 한 번만 표시
+        if e.is_split_before() {
+            continue;
+        }
+        out.push(EntryInfo {
+            name: e.filename.to_string_lossy().replace('\\', "/"),
+            size: e.unpacked_size,
+            is_dir: e.is_directory(),
+        });
+    }
+    Ok(out)
+}
+
+#[cfg(not(feature = "rar"))]
+fn extract_rar(_: &Path, _: &Path, _: &Options) -> Result<Stats> {
+    bail!("이 빌드는 RAR를 지원하지 않습니다 (rar 기능을 켜고 빌드하세요)")
+}
+
+#[cfg(not(feature = "rar"))]
+fn list_rar(_: &Path, _: &Options) -> Result<Vec<EntryInfo>> {
+    bail!("이 빌드는 RAR를 지원하지 않습니다 (rar 기능을 켜고 빌드하세요)")
+}
+
+// ---------------------------------------------------------------------------
 // 목록
 // ---------------------------------------------------------------------------
 
@@ -739,6 +848,7 @@ pub fn list(archive: &Path, opts: &Options) -> Result<Vec<EntryInfo>> {
                 .map(|e| EntryInfo { name: e.name().to_string(), size: e.size(), is_dir: e.is_directory() })
                 .collect())
         }
+        Format::Rar => list_rar(archive, opts),
         Format::Tar(codec) => list_tar(decoder(codec, open_buffered(archive)?)?),
         Format::Stream(codec) => {
             let mut reader = decoder(Some(codec), open_buffered(archive)?)?;

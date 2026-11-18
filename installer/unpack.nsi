@@ -116,6 +116,7 @@ ${UnStrStr}
 
 !macro ForEachExt MACRO
   !insertmacro ${MACRO} "zip"
+  !insertmacro ${MACRO} "rar"
   !insertmacro ${MACRO} "jar"
   !insertmacro ${MACRO} "tbz"
   !insertmacro ${MACRO} "7z"
@@ -187,6 +188,7 @@ ${UnStrStr}
 ; zip 외에 연결할 수 있는 형식
 !macro ForEachOtherExt MACRO
   !insertmacro ${MACRO} "7z"
+  !insertmacro ${MACRO} "rar"
   !insertmacro ${MACRO} "tar"
   !insertmacro ${MACRO} "gz"
   !insertmacro ${MACRO} "tgz"
@@ -238,6 +240,7 @@ Section "opizenAI_Unpack (필수)" SecMain
   File "${BINDIR}\unpack.exe"
   File "..\README.md"
   File "..\LICENSE"
+  File "..\THIRD-PARTY-NOTICES.md"
 
   CreateDirectory "$SMPROGRAMS\${APPNAME}"
   CreateShortcut "$SMPROGRAMS\${APPNAME}\opizenAI_Unpack.lnk" "$INSTDIR\opizenAI_Unpack.exe"
@@ -280,7 +283,7 @@ Section "zip 파일 연결 (더블클릭으로 열기)" SecAssocZip
   !insertmacro AssocExt "zip"
 SectionEnd
 
-Section /o "그 외 압축 파일 연결 (7z, tar, gz, bz2, xz, zst)" SecAssocOther
+Section /o "그 외 압축 파일 연결 (7z, rar, tar, gz, bz2, xz, zst)" SecAssocOther
   !insertmacro ForEachOtherExt AssocExt
 SectionEnd
 
@@ -312,7 +315,7 @@ SectionEnd
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} "opizenAI_Unpack 프로그램(GUI, 명령줄 unpack.exe)과 시작 메뉴 바로가기"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecContext} "압축 파일 우클릭 → 알아서 풀기 / 여기에 / 새 폴더에 압축 풀기, 모든 파일·폴더 우클릭 → ZIP/7Z로 압축, 압축하기..."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecAssocZip} "zip 파일을 더블클릭하면 opizenAI_Unpack으로 엽니다. 제거하면 원래 프로그램으로 돌아갑니다."
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecAssocOther} "7z, tar, tar.gz 등 다른 압축 파일도 opizenAI_Unpack으로 엽니다."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecAssocOther} "7z, rar, tar, tar.gz 등 다른 압축 파일도 opizenAI_Unpack으로 엽니다."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecWin11Menu} "Windows 11에서 ‘추가 옵션 표시’를 누르지 않아도 우클릭 메뉴가 바로 나옵니다. 모든 프로그램의 우클릭 메뉴가 Windows 10 방식으로 바뀌며, 제거하면 되돌립니다."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "바탕화면에 바로가기를 만듭니다"
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
@@ -340,6 +343,7 @@ Section "Uninstall"
   Delete "$INSTDIR\unpack.exe"
   Delete "$INSTDIR\README.md"
   Delete "$INSTDIR\LICENSE"
+  Delete "$INSTDIR\THIRD-PARTY-NOTICES.md"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   DeleteRegKey HKLM "${UNINST_KEY}"

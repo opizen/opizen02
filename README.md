@@ -5,7 +5,7 @@ GUI 창과 명령줄 도구(`unpack`)도 함께 제공합니다. Rust로 작성�
 
 | | 형식 |
 |---|---|
-| **압축 풀기** | zip, 7z, tar, tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, gz, bz2, xz, zst |
+| **압축 풀기** | zip, 7z, **rar**, tar, tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, gz, bz2, xz, zst |
 | **압축하기** | zip, 7z, tar.gz, tar.xz |
 | **암호 (AES-256)** | zip, 7z — 풀기와 압축하기 모두 |
 | **한글 이름** | 한국어 Windows에서 만든 zip(CP949 이름)도 자동으로 인식 |
@@ -130,4 +130,6 @@ GitHub Actions가 푸시마다 두 운영체제용 파일을 빌드하며, `v*` 
 
 ## 라이선스
 
-MIT
+MIT. 단, RAR 풀기에 쓰는 UnRAR 코드는 별도의 UnRAR 라이선스를 따릅니다 — RAR를 **푸는 용도로만** 자유롭게 쓸 수 있고,
+RAR 압축 프로그램을 만드는 데는 쓸 수 없습니다. 전문은 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)에 있습니다.
+RAR 지원 없이 빌드하려면 `--no-default-features`를 쓰세요.

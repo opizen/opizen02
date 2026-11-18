@@ -22,6 +22,7 @@ stage() {
   install -Dm644 "$L/nautilus/opizenai_unpack.py" "$root/share/nautilus-python/extensions/opizenai_unpack.py"
   install -Dm644 README.md "$root/share/doc/opizenai-unpack/README.md"
   install -Dm644 LICENSE "$root/share/doc/opizenai-unpack/copyright"
+  install -Dm644 THIRD-PARTY-NOTICES.md "$root/share/doc/opizenai-unpack/THIRD-PARTY-NOTICES.md"
 }
 
 rm -rf target/pkg && mkdir -p dist target/pkg
@@ -45,7 +46,7 @@ Recommends: xdg-desktop-portal, libvulkan1, mesa-vulkan-drivers | vulkan-icd
 Suggests: python3-nautilus
 Homepage: https://github.com/opizen/opizen02
 Description: opizenAI_Unpack - 압축 풀기 / 압축하기 (GUI + CLI)
- zip, 7z, tar, tar.gz, tar.bz2, tar.xz, tar.zst, gz, bz2, xz, zst 압축 풀기와
+ zip, 7z, rar, tar, tar.gz, tar.bz2, tar.xz, tar.zst, gz, bz2, xz, zst 압축 풀기와
  zip, 7z, tar.gz, tar.xz 압축하기를 지원합니다. 파일 관리자(Nautilus, Dolphin,
  Nemo) 우클릭 메뉴를 함께 설치합니다.
 CTRL
@@ -56,7 +57,7 @@ TGZ_DIR="$NAME-$VERSION-linux-x86_64"
 T="target/pkg/$TGZ_DIR"
 stage "$T"
 rm -rf "$T/share/doc"
-cp README.md LICENSE "$T/"
+cp README.md LICENSE THIRD-PARTY-NOTICES.md "$T/"
 install -m755 "$L/install.sh" "$L/uninstall.sh" "$T/"
 tar -C target/pkg -czf "dist/$TGZ_DIR.tar.gz" "$TGZ_DIR"
 

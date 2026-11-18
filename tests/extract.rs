@@ -427,3 +427,65 @@ fn modification_times_are_preserved() {
     let t = mtime(&out.join("영문.txt"));
     assert!(close_to(t, old, 14 * 3600 + 2), "{t:?}"); // 시간대 차이 허용
 }
+
+// ---------------------------------------------------------------------------
+// RAR 풀기 (fixtures/rar: unrar 크레이트의 테스트 데이터)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "rar")]
+mod rar {
+    use super::*;
+
+    fn fx(name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rar").join(name)
+    }
+
+    #[test]
+    fn detects_and_lists() {
+        assert_eq!(unpack::detect(&fx("version.rar")).unwrap(), unpack::Format::Rar);
+        // 확장자가 달라도 내용(매직 바이트)으로 인식
+        let tmp = tempdir().unwrap();
+        let renamed = tmp.path().join("mystery.bin");
+        fs::copy(fx("version.rar"), &renamed).unwrap();
+        assert_eq!(unpack::detect(&renamed).unwrap(), unpack::Format::Rar);
+
+        let names: Vec<String> = list(&fx("unicode.rar"), &Options::default()).unwrap().into_iter().map(|e| e.name).collect();
+        assert_eq!(names, vec!["te…―st✌".to_string()]);
+        assert_eq!(unpack::base_name(Path::new("영화.part1.rar")), "영화");
+        assert_eq!(unpack::base_name(Path::new("a.b.rar")), "a.b");
+    }
+
+    #[test]
+    fn extracts_with_time() {
+        let tmp = tempdir().unwrap();
+        let s = extract(&fx("version.rar"), Some(tmp.path()), &Options::default()).unwrap();
+        assert_eq!((s.files, s.bytes), (1, 11));
+        assert_eq!(fs::read(tmp.path().join("VERSION")).unwrap().len(), 11);
+        let year_2015 = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_420_070_400);
+        assert!(mtime(&tmp.path().join("VERSION")) < year_2015 + std::time::Duration::from_secs(366 * 86400));
+        // 알아서 풀기도 동작
+        let s = extract_auto(&fx("version.rar"), tmp.path(), Mode::Smart, &Options::default()).unwrap();
+        assert!(s.output.ends_with("VERSION (2)") || s.output.ends_with("version"), "{:?}", s.output);
+    }
+
+    #[test]
+    fn passwords() {
+        let tmp = tempdir().unwrap();
+        // 이름은 보이고 내용만 암호화
+        assert_eq!(list(&fx("crypted.rar"), &Options::default()).unwrap().len(), 1);
+        let e = extract(&fx("crypted.rar"), Some(&tmp.path().join("a")), &Options::default()).unwrap_err();
+        assert!(is_password_error(&e), "{e:#}");
+        let wrong = Options { password: Some("nope".into()), ..Default::default() };
+        let e = extract(&fx("crypted.rar"), Some(&tmp.path().join("b")), &wrong).unwrap_err();
+        assert!(is_password_error(&e), "{e:#}");
+        let right = Options { password: Some("unrar".into()), ..Default::default() };
+        extract(&fx("crypted.rar"), Some(&tmp.path().join("c")), &right).unwrap();
+        assert_eq!(fs::read_to_string(tmp.path().join("c/.gitignore")).unwrap(), "target\nCargo.lock\n");
+
+        // 이름까지 암호화(-hp): 목록부터 암호 필요
+        let e = list(&fx("comment-hpw-password.rar"), &Options::default()).unwrap_err();
+        assert!(is_password_error(&e), "{e:#}");
+        let pw = Options { password: Some("password".into()), ..Default::default() };
+        assert_eq!(list(&fx("comment-hpw-password.rar"), &pw).unwrap().len(), 1);
+    }
+}
