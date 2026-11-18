@@ -1,34 +1,103 @@
-//! Unpack GUI — 드래그 앤 드롭으로 압축 파일을 해제하는 데스크톱 앱.
+//! opizenAI_Unpack GUI — 압축 풀기 / 압축하기 데스크톱 앱 (Windows, Linux).
 //!
-//! 명령줄 인자로 파일 경로를 받으면 목록에 추가하고,
-//! `--auto`가 함께 있으면 바로 해제를 시작합니다 (탐색기 우클릭 메뉴용).
+//! 명령줄 인자로 파일 경로를 받으면 목록에 추가합니다.
+//!
+//! 파일 관리자 우클릭 메뉴에서 쓰는 옵션:
+//! - `--here <파일>…`     : "여기에 압축 풀기" (스마트 해제, 작은 진행 창)
+//! - `--folder <파일>…`   : "새 폴더에 압축 풀기"
+//! - `--auto <파일>…`     : 전체 창을 열고 바로 해제 시작
+//! - `--zip <항목>…`      : "ZIP으로 압축" (선택한 항목 전체를 하나로)
+//! - `--7z <항목>…`       : "7Z로 압축"
+//! - `--compress <항목>…` : "압축하기…" (형식·이름·암호 선택)
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
+
+mod gather;
+mod pack;
+mod quick;
 
 use eframe::egui::{self, Color32, RichText};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use unpack::{EntryInfo, Options, detect, extract_into, list};
+use unpack::{ArchiveKind, EntryInfo, Mode, Options, detect, extract_into, list};
 
 const EXTENSIONS: &[&str] = &[
     "zip", "jar", "7z", "tar", "gz", "tgz", "bz2", "tbz2", "tbz", "xz", "txz", "zst", "tzst",
 ];
 
+enum Launch {
+    Main { auto: bool },
+    Extract(Mode),
+    /// `None`이면 형식을 묻는 창
+    Pack(Option<ArchiveKind>),
+}
+
 fn main() -> eframe::Result {
-    let mut auto = false;
+    let mut launch = Launch::Main { auto: false };
     let mut files = Vec::new();
     for arg in std::env::args_os().skip(1) {
-        if arg == "--auto" {
-            auto = true;
-        } else {
-            files.push(PathBuf::from(arg));
+        match arg.to_str() {
+            Some("--auto") => launch = Launch::Main { auto: true },
+            Some("--here") => launch = Launch::Extract(Mode::Smart),
+            Some("--folder") => launch = Launch::Extract(Mode::NewFolder),
+            Some("--zip") => launch = Launch::Pack(Some(ArchiveKind::Zip)),
+            Some("--7z") => launch = Launch::Pack(Some(ArchiveKind::SevenZ)),
+            Some("--compress") => launch = Launch::Pack(None),
+            _ => {
+                let p = PathBuf::from(arg);
+                files.push(std::path::absolute(&p).unwrap_or(p));
+            }
         }
     }
 
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../assets/unpack.png")).ok();
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/unpack.png")).ok();
+    let small_window = |size: [f32; 2]| {
+        let mut v = egui::ViewportBuilder::default()
+            .with_title(unpack::APP_NAME)
+            .with_inner_size(size)
+            .with_min_inner_size([360.0, 140.0])
+            .with_always_on_top();
+        if let Some(icon) = icon.clone() {
+            v = v.with_icon(icon);
+        }
+        eframe::NativeOptions { viewport: v, centered: true, ..Default::default() }
+    };
+
+    match launch {
+        Launch::Extract(mode) if !files.is_empty() => {
+            let tag = if mode == Mode::Smart { "HERE" } else { "FOLDER" };
+            let Some(files) = gather::gather(tag, files) else { return Ok(()) };
+            let height = (150.0 + 26.0 * files.len().min(7) as f32).min(330.0);
+            return eframe::run_native(
+                unpack::APP_NAME,
+                small_window([480.0, height]),
+                Box::new(move |cc| {
+                    install_fonts(&cc.egui_ctx);
+                    Ok(Box::new(quick::QuickApp::new(&cc.egui_ctx, mode, files)))
+                }),
+            );
+        }
+        Launch::Pack(kind) if !files.is_empty() => {
+            let tag = kind.map(|k| k.label()).unwrap_or("ASK");
+            // 다른 프로세스가 모아서 처리하면 이 프로세스는 조용히 끝냄
+            let Some(files) = gather::gather(tag, files) else { return Ok(()) };
+            let size = if kind.is_some() { [460.0, 170.0] } else { [540.0, 220.0] };
+            return eframe::run_native(
+                unpack::APP_NAME,
+                small_window(size),
+                Box::new(move |cc| {
+                    install_fonts(&cc.egui_ctx);
+                    Ok(Box::new(pack::PackApp::new(&cc.egui_ctx, files, kind)))
+                }),
+            );
+        }
+        _ => {}
+    }
+    let auto = matches!(launch, Launch::Main { auto: true });
+
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("Unpack — 압축 해제")
+        .with_title(format!("{} — 압축 해제", unpack::APP_NAME))
         .with_inner_size([720.0, 560.0])
         .with_min_inner_size([520.0, 420.0])
         .with_drag_and_drop(true);
@@ -37,7 +106,7 @@ fn main() -> eframe::Result {
     }
 
     eframe::run_native(
-        "Unpack",
+        unpack::APP_NAME,
         eframe::NativeOptions { viewport, ..Default::default() },
         Box::new(move |cc| {
             install_fonts(&cc.egui_ctx);
@@ -314,7 +383,7 @@ impl eframe::App for App {
         });
 
         egui::CentralPanel::default_margins().show(ui, |ui| {
-            ui.heading("Unpack 압축 해제");
+            ui.heading(format!("{} 압축 해제", unpack::APP_NAME));
             ui.label("zip · 7z · tar · tar.gz · tar.bz2 · tar.xz · tar.zst · gz · bz2 · xz · zst");
             ui.add_space(8.0);
 

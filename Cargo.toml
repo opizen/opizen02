@@ -1,17 +1,21 @@
 [package]
-name = "unpack"
+name = "opizenai-unpack"
 version = "0.2.0"
 edition = "2024"
-description = "압축 해제 프로그램 (CLI + GUI)"
 license = "MIT"
+description = "opizenAI_Unpack — 압축 해제 프로그램 (CLI + GUI, Windows / Linux)"
+
+[lib]
+name = "unpack"
+path = "src/lib.rs"
 
 [[bin]]
 name = "unpack"
 path = "src/main.rs"
 
 [[bin]]
-name = "unpack-gui"
-path = "src/bin/gui.rs"
+name = "opizenAI_Unpack"
+path = "src/bin/gui/main.rs"
 required-features = ["gui"]
 
 [dependencies]
@@ -23,6 +27,7 @@ flate2 = "1.1.11"
 rfd = { version = "0.18.0", optional = true }
 sevenz-rust2 = "0.25.0"
 tar = "0.4.46"
+time = { version = "0.3.55", features = ["local-offset"] }
 xz2 = "0.1.7"
 zip = "9.7.0"
 zstd = "0.14.4"
@@ -39,7 +44,7 @@ zstd = "0.14.4"
 
 [features]
 default = []
-# Windows/데스크톱 GUI 앱 (unpack-gui)
+# 데스크톱 GUI 앱 (opizenAI_Unpack) — Windows / Linux
 gui = ["dep:eframe", "dep:rfd"]
 
 [profile.release]

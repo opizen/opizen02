@@ -4,8 +4,8 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/unpack.ico")
-            .set("ProductName", "Unpack")
-            .set("FileDescription", "Unpack 압축 해제 프로그램")
+            .set("ProductName", "opizenAI_Unpack")
+            .set("FileDescription", "opizenAI_Unpack 압축 해제 프로그램")
             .set("LegalCopyright", "MIT License");
         if let Err(e) = res.compile() {
             println!("cargo:warning=Windows 리소스 컴파일 실패: {e}");

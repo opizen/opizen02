@@ -1,0 +1,8 @@
+[Nemo Action]
+Name=ZIP으로 압축
+Comment=opizenAI_Unpack
+Exec=opizenAI_Unpack --zip %F
+Icon-Name=opizenai-unpack
+Selection=notnone
+Extensions=any;
+

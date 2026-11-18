@@ -1,0 +1,24 @@
+[Desktop Entry]
+Type=Application
+Name=opizenAI_Unpack
+GenericName=압축 프로그램
+GenericName[ko]=압축 프로그램
+Comment=Extract and create zip, 7z, tar.gz, tar.xz archives
+Comment[ko]=zip, 7z, tar.gz, tar.xz 등 압축 풀기 / 압축하기
+Exec=opizenAI_Unpack %F
+Icon=opizenai-unpack
+Terminal=false
+Categories=Utility;Archiving;Compression;
+Keywords=zip;7z;tar;unzip;extract;compress;archive;압축;
+MimeType=application/zip;application/java-archive;application/x-7z-compressed;application/x-tar;application/gzip;application/x-gzip;application/x-compressed-tar;application/x-bzip2;application/x-bzip;application/x-bzip-compressed-tar;application/x-xz;application/x-xz-compressed-tar;application/zstd;application/x-zstd-compressed-tar;
+Actions=here;folder;
+
+[Desktop Action here]
+Name=Extract Here
+Name[ko]=여기에 압축 풀기
+Exec=opizenAI_Unpack --here %F
+
+[Desktop Action folder]
+Name=Extract to New Folder
+Name[ko]=새 폴더에 압축 풀기
+Exec=opizenAI_Unpack --folder %F

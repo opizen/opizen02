@@ -2273,6 +2273,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_threads"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cabcc654086861f9e1bc5115258de62ef92c79b20f4615a1b0cc57c4e82027d4"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "objc-sys"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2615,6 +2624,26 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "opizenai-unpack"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "bzip2",
+ "clap",
+ "eframe",
+ "flate2",
+ "rfd",
+ "sevenz-rust2",
+ "tar",
+ "tempfile",
+ "time",
+ "winresource",
+ "xz2",
+ "zip",
+ "zstd",
+]
 
 [[package]]
 name = "orbclient"
@@ -3608,7 +3637,9 @@ checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
 dependencies = [
  "deranged",
  "js-sys",
+ "libc",
  "num-conv",
+ "num_threads",
  "powerfmt",
  "serde_core",
  "time-core",
@@ -3831,25 +3862,6 @@ name = "unicode-width"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
-
-[[package]]
-name = "unpack"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "bzip2",
- "clap",
- "eframe",
- "flate2",
- "rfd",
- "sevenz-rust2",
- "tar",
- "tempfile",
- "winresource",
- "xz2",
- "zip",
- "zstd",
-]
 
 [[package]]
 name = "url"

@@ -1,0 +1,8 @@
+[Nemo Action]
+Name=7Z로 압축
+Comment=opizenAI_Unpack
+Exec=opizenAI_Unpack --7z %F
+Icon-Name=opizenai-unpack
+Selection=notnone
+Extensions=any;
+

@@ -7,4 +7,4 @@ VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 cargo build --release --target x86_64-pc-windows-gnu --features gui
 mkdir -p dist
 makensis -V2 -DVERSION="$VERSION" installer/unpack.nsi
-echo "생성됨: dist/UnpackSetup-$VERSION-x64.exe"
+echo "생성됨: dist/opizenAI_Unpack-Setup-$VERSION-x64.exe"

@@ -161,3 +161,186 @@ fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// 우클릭 메뉴용 해제 (extract_auto)
+// ---------------------------------------------------------------------------
+
+use unpack::{Mode, extract_auto, is_password_error};
+
+fn zip_with(path: &Path, files: &[(&str, &str)]) {
+    let mut z = zip::ZipWriter::new(File::create(path).unwrap());
+    for (name, body) in files {
+        z.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(body.as_bytes()).unwrap();
+    }
+    z.finish().unwrap();
+}
+
+fn no_temp_left(dir: &Path) -> bool {
+    fs::read_dir(dir).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with(".unpack-tmp"))
+}
+
+#[test]
+fn smart_single_root_goes_directly_into_parent() {
+    let tmp = tempdir().unwrap();
+    let p = tmp.path();
+    let arc = p.join("project-v1.zip");
+    zip_with(&arc, &[("project/a.txt", "A"), ("project/sub/b.txt", "B")]);
+
+    let s = extract_auto(&arc, p, Mode::Smart, &Options::default()).unwrap();
+    assert_eq!(s.output, p.join("project"));
+    assert_eq!(fs::read_to_string(p.join("project/sub/b.txt")).unwrap(), "B");
+    assert!(no_temp_left(p));
+
+    // 같은 이름이 이미 있으면 압축 파일 이름 폴더로 (겹치지 않게)
+    let s = extract_auto(&arc, p, Mode::Smart, &Options::default()).unwrap();
+    assert_eq!(s.output, p.join("project-v1"));
+    assert!(p.join("project-v1/project/a.txt").exists());
+    let s = extract_auto(&arc, p, Mode::Smart, &Options::default()).unwrap();
+    assert_eq!(s.output, p.join("project-v1 (2)"));
+    assert!(no_temp_left(p));
+}
+
+#[test]
+fn smart_many_roots_get_a_folder() {
+    let tmp = tempdir().unwrap();
+    let p = tmp.path();
+    let arc = p.join("loose.zip");
+    zip_with(&arc, &[("a.txt", "A"), ("b.txt", "B")]);
+    let s = extract_auto(&arc, p, Mode::Smart, &Options::default()).unwrap();
+    assert_eq!(s.output, p.join("loose"));
+    assert!(p.join("loose/a.txt").exists() && p.join("loose/b.txt").exists());
+    assert!(!p.join("a.txt").exists());
+}
+
+#[test]
+fn new_folder_mode_never_overwrites() {
+    let tmp = tempdir().unwrap();
+    let p = tmp.path();
+    let arc = p.join("data.zip");
+    zip_with(&arc, &[("only/x.txt", "X")]);
+    fs::create_dir(p.join("data")).unwrap();
+    let s = extract_auto(&arc, p, Mode::NewFolder, &Options::default()).unwrap();
+    assert_eq!(s.output, p.join("data (2)"));
+    assert!(p.join("data (2)/only/x.txt").exists());
+}
+
+#[test]
+fn auto_single_stream_gets_unique_name() {
+    let tmp = tempdir().unwrap();
+    let p = tmp.path();
+    let mut gz = flate2::write::GzEncoder::new(File::create(p.join("log.txt.gz")).unwrap(), Default::default());
+    gz.write_all(b"new").unwrap();
+    gz.finish().unwrap();
+    fs::write(p.join("log.txt"), "old").unwrap();
+    let s = extract_auto(&p.join("log.txt.gz"), p, Mode::Smart, &Options::default()).unwrap();
+    assert_eq!(s.output, p.join("log (2).txt"));
+    assert_eq!(fs::read_to_string(p.join("log.txt")).unwrap(), "old");
+    assert_eq!(fs::read_to_string(p.join("log (2).txt")).unwrap(), "new");
+}
+
+#[test]
+fn encrypted_zip_reports_password_error_and_cleans_up() {
+    let tmp = tempdir().unwrap();
+    let p = tmp.path();
+    let arc = p.join("secret.zip");
+    let mut z = zip::ZipWriter::new(File::create(&arc).unwrap());
+    let o = zip::write::SimpleFileOptions::default().with_aes_encryption(zip::AesMode::Aes256, "pw123");
+    z.start_file("s.txt", o).unwrap();
+    z.write_all(b"top secret").unwrap();
+    z.finish().unwrap();
+
+    let e = extract_auto(&arc, p, Mode::Smart, &Options::default()).unwrap_err();
+    assert!(is_password_error(&e), "{e:#}");
+    assert!(no_temp_left(p));
+
+    let wrong = Options { password: Some("nope".into()), ..Default::default() };
+    let e = extract_auto(&arc, p, Mode::Smart, &wrong).unwrap_err();
+    assert!(is_password_error(&e), "{e:#}");
+
+    let right = Options { password: Some("pw123".into()), ..Default::default() };
+    let s = extract_auto(&arc, p, Mode::Smart, &right).unwrap();
+    assert_eq!(fs::read_to_string(&s.output).unwrap(), "top secret");
+}
+
+#[test]
+fn encrypted_7z_reports_password_error() {
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("s.txt"), "seven secret").unwrap();
+    let arc = tmp.path().join("secret.7z");
+    sevenz_rust2::compress_to_path_encrypted(&src, &arc, "pw".into()).unwrap();
+
+    let out = tmp.path().join("out");
+    fs::create_dir(&out).unwrap();
+    let e = extract_auto(&arc, &out, Mode::NewFolder, &Options::default()).unwrap_err();
+    assert!(is_password_error(&e), "{e:#}");
+    let right = Options { password: Some("pw".into()), ..Default::default() };
+    extract_auto(&arc, &out, Mode::NewFolder, &right).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// 압축하기
+// ---------------------------------------------------------------------------
+
+use unpack::{ArchiveKind, compress, default_archive_path};
+
+fn sample_tree(root: &Path) -> Vec<std::path::PathBuf> {
+    fs::create_dir_all(root.join("사진/여행")).unwrap();
+    fs::write(root.join("사진/여행/바다.txt"), "파도").unwrap();
+    fs::write(root.join("사진/메모.txt"), "memo").unwrap();
+    fs::write(root.join("보고서.docx"), vec![7u8; 100_000]).unwrap();
+    vec![root.join("사진"), root.join("보고서.docx")]
+}
+
+#[test]
+fn compress_roundtrip_all_formats() {
+    for kind in ArchiveKind::ALL {
+        let tmp = tempdir().unwrap();
+        let inputs = sample_tree(tmp.path());
+        let out = default_archive_path(&inputs, kind);
+        let s = compress(&inputs, &out, kind, None).unwrap();
+        assert_eq!((s.files, s.dirs), (3, 2), "{kind:?}");
+        assert!(!out.with_file_name(format!("{}.part", out.file_name().unwrap().to_string_lossy())).exists());
+
+        let dest = tmp.path().join("check");
+        extract(&out, Some(&dest), &Options::default()).unwrap();
+        assert_eq!(fs::read_to_string(dest.join("사진/여행/바다.txt")).unwrap(), "파도", "{kind:?}");
+        assert_eq!(fs::read(dest.join("보고서.docx")).unwrap().len(), 100_000, "{kind:?}");
+    }
+}
+
+#[test]
+fn compress_with_password() {
+    for kind in [ArchiveKind::Zip, ArchiveKind::SevenZ] {
+        let tmp = tempdir().unwrap();
+        let inputs = sample_tree(tmp.path());
+        let out = tmp.path().join(format!("secret{}", kind.ext()));
+        compress(&inputs, &out, kind, Some("비밀123")).unwrap();
+
+        let e = extract(&out, Some(&tmp.path().join("x")), &Options::default()).unwrap_err();
+        assert!(is_password_error(&e), "{kind:?}: {e:#}");
+        let opts = Options { password: Some("비밀123".into()), ..Default::default() };
+        let dest = tmp.path().join("ok");
+        extract(&out, Some(&dest), &opts).unwrap();
+        assert_eq!(fs::read_to_string(dest.join("사진/메모.txt")).unwrap(), "memo", "{kind:?}");
+    }
+    let tmp = tempdir().unwrap();
+    let inputs = sample_tree(tmp.path());
+    assert!(compress(&inputs, &tmp.path().join("a.tar.gz"), ArchiveKind::TarGz, Some("pw")).is_err());
+}
+
+#[test]
+fn default_archive_names() {
+    let tmp = tempdir().unwrap();
+    let p = tmp.path();
+    let inputs = sample_tree(p);
+    assert_eq!(default_archive_path(&inputs[..1], ArchiveKind::Zip), p.join("사진.zip"));
+    assert_eq!(default_archive_path(&inputs[1..], ArchiveKind::SevenZ), p.join("보고서.7z"));
+    let parent_name = fs::canonicalize(p).unwrap().file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(default_archive_path(&inputs, ArchiveKind::Zip), p.join(format!("{parent_name}.zip")));
+    fs::write(p.join("사진.tar.gz"), "").unwrap();
+    assert_eq!(default_archive_path(&inputs[..1], ArchiveKind::TarGz), p.join("사진 (2).tar.gz"));
+}

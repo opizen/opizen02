@@ -6,6 +6,12 @@
 //! 모든 항목 경로는 대상 폴더 밖으로 나갈 수 없도록 검사됩니다(Zip Slip 방지).
 
 use anyhow::{Context, Result, bail};
+
+mod compress;
+pub use compress::{ArchiveKind, CompressStats, compress, default_archive_path};
+
+/// 프로그램 이름
+pub const APP_NAME: &str = "opizenAI_Unpack";
 use std::fs::{self, File};
 use std::io::{self, BufReader, Cursor, Read};
 use std::path::{Component, Path, PathBuf};
@@ -79,6 +85,35 @@ pub struct EntryInfo {
     pub name: String,
     pub size: u64,
     pub is_dir: bool,
+}
+
+/// 암호가 없거나 틀려서 해제할 수 없을 때의 오류.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PasswordError {
+    /// 암호를 입력했지만 틀린 경우 `true`
+    pub wrong: bool,
+}
+
+impl std::fmt::Display for PasswordError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.wrong { "암호가 올바르지 않습니다" } else { "암호가 필요합니다" })
+    }
+}
+
+impl std::error::Error for PasswordError {}
+
+/// 오류가 암호 문제(없음/틀림)인지 확인합니다.
+pub fn is_password_error(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<PasswordError>())
+}
+
+/// 우클릭 메뉴 등에서 쓰는 해제 방식.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// 최상위 항목이 하나면 그대로, 여러 개면 압축 파일 이름의 폴더에 해제
+    Smart,
+    /// 항상 압축 파일 이름의 새 폴더에 해제
+    NewFolder,
 }
 
 // ---------------------------------------------------------------------------
@@ -393,15 +428,104 @@ fn extract_impl(archive: &Path, dest: Option<&Path>, parent: PathBuf, opts: &Opt
                 extract_tar(Box::new(full), &dest.map(PathBuf::from).unwrap_or_else(default_dir), opts)
             } else {
                 let root = dest.map(PathBuf::from).unwrap_or(parent.clone());
-                let root = if root.as_os_str().is_empty() { PathBuf::from(".") } else { root };
-                let mut sink = Sink::new(&root, opts)?;
-                let rel = PathBuf::from(base_name(archive));
-                sink.file(&rel, &mut full, None)?;
-                sink.stats.output = root.join(rel);
-                Ok(sink.stats)
+                write_plain(&mut full, &root, &base_name(archive), opts)
             }
         }
     }
+}
+
+/// 압축되지 않은 단일 파일 내용을 `root/name`에 씁니다.
+fn write_plain(reader: &mut dyn Read, root: &Path, name: &str, opts: &Options) -> Result<Stats> {
+    let root = if root.as_os_str().is_empty() { PathBuf::from(".") } else { root.to_path_buf() };
+    let mut sink = Sink::new(&root, opts)?;
+    let rel = PathBuf::from(name);
+    sink.file(&rel, reader, None)?;
+    sink.stats.output = root.join(rel);
+    Ok(sink.stats)
+}
+
+/// 단일 파일 스트림(.gz 등)이면서 내용이 tar가 아닌지 확인합니다.
+fn plain_stream(archive: &Path) -> Result<Option<Box<dyn Read>>> {
+    let Format::Stream(codec) = detect(archive)? else { return Ok(None) };
+    let mut reader = decoder(Some(codec), open_buffered(archive)?)?;
+    let mut head = vec![0u8; 512];
+    let n = read_up_to(&mut reader, &mut head)?;
+    head.truncate(n);
+    if is_tar_header(&head) {
+        Ok(None)
+    } else {
+        Ok(Some(Box::new(Cursor::new(head).chain(reader))))
+    }
+}
+
+/// `path`가 이미 있으면 `이름 (2)`, `이름 (3)` … 처럼 겹치지 않는 경로를 돌려줍니다.
+pub fn unique_path(path: &Path) -> PathBuf {
+    if fs::symlink_metadata(path).is_err() {
+        return path.to_path_buf();
+    }
+    let parent = path.parent().unwrap_or(Path::new(""));
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // 확장자는 파일 이름 앞부분이 아닌 마지막 점 뒤만 분리 (".bashrc"는 확장자 없음)
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 && !path.is_dir() => (name[..i].to_string(), name[i..].to_string()),
+        _ => (name.clone(), String::new()),
+    };
+    (2..)
+        .map(|n| parent.join(format!("{stem} ({n}){ext}")))
+        .find(|p| fs::symlink_metadata(p).is_err())
+        .expect("무한 반복자")
+}
+
+/// 우클릭 메뉴용 해제: 기존 파일을 덮어쓰지 않고, 이름이 겹치면 `(2)`를 붙입니다.
+///
+/// - [`Mode::Smart`]: 임시 폴더에 푼 뒤, 최상위 항목이 하나뿐이면 `parent`로 바로 옮기고
+///   여러 개면 압축 파일 이름의 폴더로 정리합니다.
+/// - [`Mode::NewFolder`]: 항상 압축 파일 이름의 새 폴더에 풉니다.
+///
+/// 단일 파일 스트림(.gz 등)은 두 방식 모두 `parent`에 파일 하나를 만듭니다.
+pub fn extract_auto(archive: &Path, parent: &Path, mode: Mode, opts: &Options) -> Result<Stats> {
+    let base = base_name(archive);
+    if let Some(mut reader) = plain_stream(archive)? {
+        let target = unique_path(&parent.join(&base));
+        let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(base);
+        return write_plain(&mut reader, parent, &name, opts);
+    }
+
+    if mode == Mode::NewFolder {
+        let dest = unique_path(&parent.join(&base));
+        return extract(archive, Some(&dest), opts);
+    }
+
+    // 스마트 해제: 같은 드라이브의 임시 폴더에 풀고 이름만 바꿔 옮깁니다(복사 없음).
+    let tmp = (0..)
+        .map(|n| parent.join(format!(".unpack-tmp-{}-{n}", std::process::id())))
+        .find(|p| fs::symlink_metadata(p).is_err())
+        .expect("무한 반복자");
+    let result = extract(archive, Some(&tmp), opts).and_then(|mut stats| {
+        let mut entries: Vec<_> = fs::read_dir(&tmp)?.collect::<io::Result<_>>()?;
+        let single = (entries.len() == 1).then(|| entries.remove(0));
+        let output = match single {
+            Some(entry) if fs::symlink_metadata(parent.join(entry.file_name())).is_err() => {
+                let target = parent.join(entry.file_name());
+                fs::rename(entry.path(), &target)
+                    .with_context(|| format!("이동 실패: {}", target.display()))?;
+                fs::remove_dir(&tmp)?;
+                target
+            }
+            _ => {
+                let target = unique_path(&parent.join(&base));
+                fs::rename(&tmp, &target)
+                    .with_context(|| format!("이동 실패: {}", target.display()))?;
+                target
+            }
+        };
+        stats.output = output;
+        Ok(stats)
+    });
+    if result.is_err() && tmp.exists() {
+        let _ = fs::remove_dir_all(&tmp);
+    }
+    result
 }
 
 fn open_buffered(path: &Path) -> Result<BufReader<File>> {
@@ -474,10 +598,10 @@ fn extract_zip(path: &Path, root: &Path, opts: &Options) -> Result<Stats> {
             None => zip.by_index(i),
         }
         .map_err(|e| match e {
-            zip::result::ZipError::UnsupportedArchive(m) if m.contains("Password") => {
-                anyhow::anyhow!("암호가 걸린 zip입니다. --password 옵션을 사용하세요")
+            zip::result::ZipError::UnsupportedArchive(m) if m == zip::result::ZipError::PASSWORD_REQUIRED => {
+                anyhow::Error::new(PasswordError { wrong: false })
             }
-            zip::result::ZipError::InvalidPassword => anyhow::anyhow!("암호가 올바르지 않습니다"),
+            zip::result::ZipError::InvalidPassword => anyhow::Error::new(PasswordError { wrong: true }),
             e => anyhow::Error::new(e).context(format!("zip 항목 #{i} 읽기 실패")),
         })?;
         let raw = file.name().map(|n| n.into_owned()).unwrap_or_else(|_| format!("#{i}"));
@@ -506,9 +630,19 @@ fn sevenz_password(opts: &Options) -> sevenz_rust2::Password {
     }
 }
 
+fn sevenz_error(e: sevenz_rust2::Error, what: &str, opts: &Options) -> anyhow::Error {
+    match e {
+        sevenz_rust2::Error::PasswordRequired => anyhow::Error::new(PasswordError { wrong: false }),
+        sevenz_rust2::Error::MaybeBadPassword(_) => {
+            anyhow::Error::new(PasswordError { wrong: opts.password.is_some() })
+        }
+        e => anyhow::anyhow!("7z {what} 실패: {e}"),
+    }
+}
+
 fn extract_7z(path: &Path, root: &Path, opts: &Options) -> Result<Stats> {
     let mut reader = sevenz_rust2::ArchiveReader::open(path, sevenz_password(opts))
-        .map_err(|e| anyhow::anyhow!("7z 열기 실패: {e}"))?;
+        .map_err(|e| sevenz_error(e, "열기", opts))?;
     let mut sink = Sink::new(root, opts)?;
     let mut failure: Option<anyhow::Error> = None;
     let result = reader.for_each_entries(|entry, data| {
@@ -533,7 +667,7 @@ fn extract_7z(path: &Path, root: &Path, opts: &Options) -> Result<Stats> {
     if let Some(e) = failure {
         return Err(e);
     }
-    result.map_err(|e| anyhow::anyhow!("7z 해제 실패: {e}"))?;
+    result.map_err(|e| sevenz_error(e, "해제", opts))?;
     Ok(sink.stats)
 }
 
@@ -559,7 +693,7 @@ pub fn list(archive: &Path, opts: &Options) -> Result<Vec<EntryInfo>> {
         }
         Format::SevenZ => {
             let reader = sevenz_rust2::ArchiveReader::open(archive, sevenz_password(opts))
-                .map_err(|e| anyhow::anyhow!("7z 열기 실패: {e}"))?;
+                .map_err(|e| sevenz_error(e, "열기", opts))?;
             Ok(reader
                 .archive()
                 .files

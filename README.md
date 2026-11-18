@@ -1,74 +1,80 @@
-# Unpack — Rust 압축 해제 프로그램
+# opizenAI_Unpack
 
-여러 압축 형식을 안전하게 해제하는 프로그램입니다. **Windows GUI 앱(설치 프로그램 제공)**과 명령줄 도구(CLI)를 함께 제공합니다.
+**Windows와 Linux**에서 쓰는 압축 프로그램입니다. 파일 관리자 **우클릭 메뉴**로 바로 압축을 풀거나 압축할 수 있고,
+GUI 창과 명령줄 도구(`unpack`)도 함께 제공합니다. Rust로 작성되었습니다.
 
-## Windows 설치
+| | 형식 |
+|---|---|
+| **압축 풀기** | zip, 7z, tar, tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, gz, bz2, xz, zst |
+| **압축하기** | zip, 7z, tar.gz, tar.xz |
+| **암호 (AES-256)** | zip, 7z — 풀기와 압축하기 모두 |
 
-1. [Actions](../../actions) 의 최신 "Windows 설치 파일" 실행 결과에서 `UnpackSetup` 아티팩트를 받거나,
-   [Releases](../../releases) 에서 `UnpackSetup-<버전>-x64.exe` 를 받습니다.
-2. 설치 파일을 실행합니다 (관리자 권한 필요, 64비트 Windows 10/11).
-3. 설치 시 선택할 수 있는 항목
-   - 시작 메뉴 바로가기 (기본)
-   - 탐색기 우클릭 메뉴 **"Unpack으로 압축 풀기"** (Windows 11은 "추가 옵션 표시" 안)
-   - 바탕화면 바로가기
-4. 제거: Windows 설정 → 앱 → Unpack 제거
+## 내려받기
 
-> 서명되지 않은 실행 파일이므로 처음 실행 시 SmartScreen 경고가 나올 수 있습니다. "추가 정보 → 실행"을 누르세요.
+[Releases](../../releases) 또는 [Actions](../../actions) 의 최신 빌드 결과(Artifacts)에서 받습니다.
 
-### GUI 사용법
+| 운영체제 | 파일 | 설치 |
+|---|---|---|
+| Windows 10/11 (64비트) | `opizenAI_Unpack-Setup-<버전>-x64.exe` | 실행 후 안내에 따라 설치 |
+| Ubuntu / Debian | `opizenai-unpack_<버전>_amd64.deb` | `sudo apt install ./opizenai-unpack_<버전>_amd64.deb` |
+| 그 외 Linux | `opizenAI_Unpack-<버전>-linux-x86_64.tar.gz` | 압축을 풀고 `./install.sh` (사용자) 또는 `sudo ./install.sh` (시스템) |
 
-- 압축 파일을 창에 **끌어다 놓거나** "파일 추가…" 버튼으로 선택
-- 출력 위치(압축 파일과 같은 위치 / 지정 폴더), 암호, 덮어쓰기 옵션 지정
-- **압축 풀기** 클릭 → 각 파일마다 이름이 같은 폴더에 해제
-- "내용" 버튼으로 풀기 전에 목록 확인
+> Windows: 코드 서명이 없어 처음 실행 시 SmartScreen 경고가 나올 수 있습니다. "추가 정보 → 실행"을 누르세요.
 
-### 설치 파일 직접 빌드 (Linux)
+## 우클릭 메뉴
+
+### 압축 파일을 우클릭 → `opizenAI_Unpack ▸`
+
+| 메뉴 | 동작 |
+|---|---|
+| **여기에 압축 풀기** | 스마트 해제 — 안의 최상위 항목이 하나면 그대로 풀고, 여러 개면 압축 파일 이름의 폴더를 만들어 풉니다 |
+| **새 폴더에 압축 풀기** | 항상 압축 파일 이름의 폴더에 풉니다 |
+| **opizenAI_Unpack으로 열기...** | 전체 창에서 내용 보기·옵션 지정 후 해제 |
+
+### 아무 파일·폴더를 우클릭 → `opizenAI_Unpack 압축 ▸`
+
+| 메뉴 | 동작 |
+|---|---|
+| **ZIP으로 압축** | 바로 `이름.zip` 생성 |
+| **7Z로 압축** | 바로 `이름.7z` 생성 |
+| **압축하기...** | 형식(ZIP/7Z/TAR.GZ/TAR.XZ), 파일 이름, 저장 위치, 암호를 고른 뒤 압축 |
+
+- 여러 파일을 선택하고 압축하면 **압축 파일 하나**로 묶입니다 (이름은 들어 있는 폴더 이름).
+- 기존 파일은 절대 덮어쓰지 않으며, 이름이 겹치면 `이름 (2)`처럼 새 이름을 씁니다.
+- 작업 창은 성공하면 저절로 닫히고, 실패하거나 경고가 있으면 이유를 보여 줍니다.
+- 암호가 걸린 압축 파일은 진행 창에서 암호를 입력하고 다시 시도할 수 있습니다.
+
+### 지원하는 파일 관리자
+
+| 운영체제 | 파일 관리자 | 비고 |
+|---|---|---|
+| Windows | 탐색기 | Windows 11은 "추가 옵션 표시"(Shift+F10) 안에 나타납니다 |
+| Linux | GNOME 파일 (Nautilus) | `python3-nautilus` 설치 시 우클릭 메뉴, 없으면 "스크립트" 메뉴(사용자 설치) |
+| Linux | KDE Dolphin | 서비스 메뉴 |
+| Linux | Cinnamon Nemo | Nemo 액션 |
+
+설치 후 우클릭 메뉴가 보이지 않으면 파일 관리자를 다시 시작하세요 (예: `nautilus -q`).
+
+## GUI 창
+
+압축 파일을 창에 끌어다 놓거나 "파일 추가…"로 고른 뒤 **압축 풀기**를 누릅니다.
+출력 위치(압축 파일과 같은 위치 / 지정 폴더), 암호, 덮어쓰기 옵션을 정할 수 있고 "내용"으로 미리 볼 수 있습니다.
+
+## 명령줄 도구 (`unpack`)
 
 ```bash
-rustup target add x86_64-pc-windows-gnu
-sudo apt-get install -y mingw-w64 nsis
-./build-windows.sh   # → dist/UnpackSetup-<버전>-x64.exe
-```
-
-`v*` 태그를 푸시하면 GitHub Actions가 설치 파일을 빌드해 Release에 자동 첨부합니다.
-
----
-
-## 명령줄 도구 (CLI)
-
-## 지원 형식
-
-| 형식 | 확장자 |
-|------|--------|
-| ZIP (암호 지원) | `.zip`, `.jar` |
-| 7-Zip (암호 지원) | `.7z` |
-| TAR | `.tar` |
-| TAR + 압축 | `.tar.gz` `.tgz`, `.tar.bz2` `.tbz2`, `.tar.xz` `.txz`, `.tar.zst` `.tzst` |
-| 단일 파일 압축 | `.gz`, `.bz2`, `.xz`, `.zst` |
-
-확장자가 없거나 틀려도 **매직 바이트**로 형식을 감지하며, `.gz`/`.xz` 등의 내용이 tar이면 자동으로 tar로 풉니다.
-
-## 빌드
-
-```bash
-cargo build --release                 # CLI: target/release/unpack
-cargo build --release --features gui  # GUI: target/release/unpack-gui
-```
-
-## 사용법
-
-```bash
-unpack archive.zip                 # archive/ 폴더에 해제
-unpack data.tar.gz -o out          # out/ 폴더에 해제
-unpack a.zip b.7z c.tar.xz -o out  # out/a, out/b, out/c 로 각각 해제
-unpack -l archive.7z               # 목록만 보기
-unpack -f archive.zip              # 기존 파일 덮어쓰기
-unpack -p 비밀번호 secret.zip      # 암호 걸린 zip / 7z
-unpack -v archive.tar              # 해제되는 파일 이름 출력
+unpack archive.zip                   # archive/ 폴더에 해제
+unpack data.tar.gz -o out            # out/ 폴더에 해제
+unpack a.zip b.7z -o out             # out/a, out/b 로 각각 해제
+unpack -l archive.7z                 # 목록만 보기
+unpack -p 비밀번호 secret.zip         # 암호 걸린 zip / 7z
+unpack -c 결과.zip 폴더 파일.txt      # 압축하기 (형식은 확장자: .zip .7z .tar.gz .tar.xz)
+unpack -c 비밀.7z -p 비밀번호 폴더     # 암호 걸린 7z 만들기
 ```
 
 | 옵션 | 설명 |
 |------|------|
+| `-c, --create <ARCHIVE>` | 압축 파일 만들기 |
 | `-o, --output <DIR>` | 출력 폴더 (기본: 압축 파일 옆, 확장자를 뺀 이름) |
 | `-l, --list` | 해제하지 않고 목록 표시 |
 | `-f, --overwrite` | 이미 존재하는 파일 덮어쓰기 (기본은 건너뜀) |
@@ -79,10 +85,21 @@ unpack -v archive.tar              # 해제되는 파일 이름 출력
 
 - `../`, 절대 경로, 드라이브 문자(`C:`)가 들어간 항목은 건너뜁니다 (Zip Slip 방지).
 - 출력 폴더 밖을 가리키는 심볼릭 링크는 만들지 않습니다.
-- 덮어쓸 때 기존 심볼릭 링크를 먼저 지워, 링크를 통해 바깥 파일을 덮어쓰지 않습니다.
+- 압축은 임시 파일(`*.part`)에 쓴 뒤 완료되면 이름을 바꿔, 실패해도 깨진 파일이 남지 않습니다.
 
-## 테스트
+## 직접 빌드
 
 ```bash
-cargo test
+cargo test                             # 테스트
+cargo build --release                  # CLI: target/release/unpack
+cargo build --release --features gui   # GUI: target/release/opizenAI_Unpack
+./build-linux.sh                       # → dist/*.deb, dist/*-linux-x86_64.tar.gz
+./build-windows.sh                     # → dist/opizenAI_Unpack-Setup-*.exe (Linux에서 교차 빌드)
 ```
+
+Windows 설치 파일 교차 빌드에는 `rustup target add x86_64-pc-windows-gnu`, `mingw-w64`, `nsis`가 필요합니다.
+GitHub Actions가 푸시마다 두 운영체제용 파일을 빌드하며, `v*` 태그를 만들면 Release에 자동으로 첨부합니다.
+
+## 라이선스
+
+MIT

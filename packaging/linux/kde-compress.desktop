@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Service
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+MimeType=all/allfiles;inode/directory;
+Actions=zip;sevenz;ask;
+X-KDE-Submenu=opizenAI_Unpack 압축
+Icon=opizenai-unpack
+
+[Desktop Action zip]
+Name=ZIP으로 압축
+Icon=archive-insert
+Exec=opizenAI_Unpack --zip %F
+
+[Desktop Action sevenz]
+Name=7Z로 압축
+Icon=archive-insert
+Exec=opizenAI_Unpack --7z %F
+
+[Desktop Action ask]
+Name=압축하기...
+Icon=opizenai-unpack
+Exec=opizenAI_Unpack --compress %F
