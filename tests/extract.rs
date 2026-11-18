@@ -285,7 +285,7 @@ fn encrypted_7z_reports_password_error() {
 // 압축하기
 // ---------------------------------------------------------------------------
 
-use unpack::{ArchiveKind, compress, default_archive_path};
+use unpack::{ArchiveKind, compress, compress_with, default_archive_path};
 
 fn sample_tree(root: &Path) -> Vec<std::path::PathBuf> {
     fs::create_dir_all(root.join("사진/여행")).unwrap();
@@ -487,5 +487,213 @@ mod rar {
         assert!(is_password_error(&e), "{e:#}");
         let pw = Options { password: Some("password".into()), ..Default::default() };
         assert_eq!(list(&fx("comment-hpw-password.rar"), &pw).unwrap().len(), 1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 4~13번 기능
+// ---------------------------------------------------------------------------
+
+use std::sync::Arc;
+use unpack::{CompressOptions, Level, Limits, Progress, Selection, is_cancelled, is_too_large, test_archive};
+
+fn big_tree(root: &Path) -> Vec<std::path::PathBuf> {
+    fs::create_dir_all(root.join("자료/하위")).unwrap();
+    // 압축은 되지만 수준에 따라 결과가 달라지는 내용 (단어를 의사 난수로 섞음)
+    let words = ["압축", "파일", "풀기", "opizenAI", "Unpack", "테스트", "문장", "zip", "7z", "자료", "폴더", "사진"];
+    let mut x: u64 = 12345;
+    let mut text = String::new();
+    for _ in 0..60_000 {
+        x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        text.push_str(words[(x >> 33) as usize % words.len()]);
+        text.push(if (x >> 20).is_multiple_of(7) { '\n' } else { ' ' });
+    }
+    fs::write(root.join("자료/본문.txt"), &text).unwrap();
+    fs::write(root.join("자료/하위/a.txt"), "A").unwrap();
+    fs::write(root.join("자료/하위/b.txt"), "B").unwrap();
+    vec![root.join("자료")]
+}
+
+#[test]
+fn progress_reaches_total() {
+    let tmp = tempdir().unwrap();
+    let inputs = big_tree(tmp.path());
+    for kind in ArchiveKind::ALL {
+        let arc = tmp.path().join(format!("p{}", kind.ext()));
+        let p = Progress::new();
+        compress_with(&inputs, &arc, kind, &CompressOptions { progress: Some(p.clone()), ..Default::default() }).unwrap();
+        assert_eq!(p.done(), p.total(), "압축 {kind:?}");
+        assert!(p.total() > 0);
+
+        let p = Progress::new();
+        let opts = Options { progress: Some(p.clone()), ..Default::default() };
+        extract(&arc, Some(&tmp.path().join(format!("out-{}", kind.label()))), &opts).unwrap();
+        assert!(p.total() > 0, "{kind:?}");
+        assert_eq!(p.fraction(), Some(1.0), "풀기 {kind:?}: {}/{}", p.done(), p.total());
+    }
+}
+
+#[test]
+fn cancel_stops_and_cleans_up() {
+    let tmp = tempdir().unwrap();
+    let inputs = big_tree(tmp.path());
+    let arc = tmp.path().join("c.zip");
+    compress(&inputs, &arc, ArchiveKind::Zip, None).unwrap();
+
+    // 시작 전에 취소해 두면 바로 멈춤
+    let p = Progress::new();
+    p.cancel();
+    let out = tmp.path().join("c-out");
+    let e = extract(&arc, Some(&out), &Options { progress: Some(p.clone()), ..Default::default() }).unwrap_err();
+    assert!(is_cancelled(&e), "{e:#}");
+
+    // 압축 취소: .part 파일과 결과가 남지 않음
+    let arc2 = tmp.path().join("c2.7z");
+    let e = compress_with(&inputs, &arc2, ArchiveKind::SevenZ, &CompressOptions { progress: Some(p), ..Default::default() }).unwrap_err();
+    assert!(is_cancelled(&e), "{e:#}");
+    assert!(!arc2.exists());
+    assert!(fs::read_dir(tmp.path()).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".part")));
+
+    // 알아서 풀기 취소: 임시 폴더가 남지 않음
+    let p = Progress::new();
+    p.cancel();
+    let e = extract_auto(&arc, tmp.path(), Mode::Smart, &Options { progress: Some(p), ..Default::default() }).unwrap_err();
+    assert!(is_cancelled(&e));
+    assert!(fs::read_dir(tmp.path()).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with(".unpack-tmp")));
+}
+
+#[test]
+fn extract_selected_entries() {
+    let tmp = tempdir().unwrap();
+    let inputs = big_tree(tmp.path());
+    for kind in ArchiveKind::ALL {
+        let arc = tmp.path().join(format!("s{}", kind.ext()));
+        compress(&inputs, &arc, kind, None).unwrap();
+        // "자료" 폴더를 보면서 "하위" 폴더만 골라 풀기 → 결과는 하위/a.txt, 하위/b.txt
+        let sel = Selection { prefix: "자료".into(), names: vec!["자료/하위".into()] };
+        let out = tmp.path().join(format!("sel-{}", kind.label()));
+        let s = extract(&arc, Some(&out), &Options { select: Some(Arc::new(sel)), ..Default::default() }).unwrap();
+        assert_eq!(s.files, 2, "{kind:?}");
+        assert_eq!(fs::read_to_string(out.join("하위/a.txt")).unwrap(), "A", "{kind:?}");
+        assert!(!out.join("본문.txt").exists() && !out.join("자료").exists(), "{kind:?}");
+    }
+}
+
+#[test]
+fn listing_has_modified_dates() {
+    let tmp = tempdir().unwrap();
+    let inputs = big_tree(tmp.path());
+    for kind in ArchiveKind::ALL {
+        let arc = tmp.path().join(format!("d{}", kind.ext()));
+        compress(&inputs, &arc, kind, None).unwrap();
+        let entries = list(&arc, &Options::default()).unwrap();
+        let file = entries.iter().find(|e| e.name.ends_with("a.txt")).unwrap();
+        let age = std::time::SystemTime::now().duration_since(file.modified.expect("날짜 없음")).unwrap_or_default();
+        assert!(age.as_secs() < 3600, "{kind:?}: {age:?}");
+    }
+}
+
+#[test]
+fn compression_levels_differ() {
+    let tmp = tempdir().unwrap();
+    let inputs = big_tree(tmp.path());
+    for kind in [ArchiveKind::Zip, ArchiveKind::TarGz, ArchiveKind::TarXz, ArchiveKind::SevenZ] {
+        let size = |level: Level| {
+            let arc = tmp.path().join(format!("l-{}-{:?}{}", kind.label(), level, kind.ext()));
+            compress_with(&inputs, &arc, kind, &CompressOptions { level, ..Default::default() }).unwrap();
+            fs::metadata(&arc).unwrap().len()
+        };
+        let (fast, best) = (size(Level::Fast), size(Level::Best));
+        assert!(best <= fast, "{kind:?}: 최대 {best} > 빠르게 {fast}");
+    }
+}
+
+#[test]
+fn test_archive_detects_corruption() {
+    let tmp = tempdir().unwrap();
+    let inputs = big_tree(tmp.path());
+    for kind in ArchiveKind::ALL {
+        let arc = tmp.path().join(format!("t{}", kind.ext()));
+        compress(&inputs, &arc, kind, None).unwrap();
+        let s = test_archive(&arc, &Options::default()).unwrap();
+        assert_eq!(s.files, 3, "{kind:?}");
+        // 검사는 아무것도 만들지 않음
+        assert!(!tmp.path().join("t").exists());
+
+        // 중간 바이트를 망가뜨리면 검사가 실패해야 함
+        let mut bytes = fs::read(&arc).unwrap();
+        let mid = bytes.len() / 2;
+        for b in &mut bytes[mid..mid + 16] {
+            *b ^= 0xFF;
+        }
+        let bad = tmp.path().join(format!("bad{}", kind.ext()));
+        fs::write(&bad, bytes).unwrap();
+        assert!(test_archive(&bad, &Options::default()).is_err(), "{kind:?}: 손상을 못 찾음");
+    }
+    #[cfg(feature = "rar")]
+    {
+        let rar = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rar/version.rar");
+        assert_eq!(test_archive(&rar, &Options::default()).unwrap().files, 1);
+    }
+}
+
+#[test]
+fn split_volumes() {
+    let tmp = tempdir().unwrap();
+    let inputs = big_tree(tmp.path());
+    for kind in [ArchiveKind::Zip, ArchiveKind::SevenZ, ArchiveKind::TarGz] {
+        let whole = tmp.path().join(format!("whole{}", kind.ext()));
+        compress(&inputs, &whole, kind, None).unwrap();
+        // 7-Zip "분할" 방식처럼 그냥 잘라서 이름.확장자.001, .002 … 로 저장
+        let bytes = fs::read(&whole).unwrap();
+        let name = format!("나눔{}", kind.ext());
+        for (i, chunk) in bytes.chunks(bytes.len() / 3 + 1).enumerate() {
+            fs::write(tmp.path().join(format!("{name}.{:03}", i + 1)), chunk).unwrap();
+        }
+        let first = tmp.path().join(format!("{name}.001"));
+        assert_eq!(unpack::base_name(&first), "나눔");
+        assert_eq!(unpack::archive_parts(&first).len(), 3);
+        let out = tmp.path().join(format!("split-{}", kind.label()));
+        extract(&first, Some(&out), &Options::default()).unwrap();
+        assert_eq!(fs::read_to_string(out.join("자료/하위/b.txt")).unwrap(), "B", "{kind:?}");
+    }
+}
+
+#[test]
+fn bomb_guard() {
+    let tmp = tempdir().unwrap();
+    // 0으로 가득 찬 4 MB → 압축하면 수 KB (압축률 수백 배)
+    fs::write(tmp.path().join("zeros.bin"), vec![0u8; 4 << 20]).unwrap();
+    let inputs = vec![tmp.path().join("zeros.bin")];
+    let strict = Limits { ratio: 50, min_size: 1 << 20 };
+    for kind in ArchiveKind::ALL {
+        let arc = tmp.path().join(format!("bomb{}", kind.ext()));
+        compress(&inputs, &arc, kind, None).unwrap();
+        let out = tmp.path().join(format!("bomb-{}", kind.label()));
+        let e = extract(&arc, Some(&out), &Options { limits: strict, ..Default::default() }).unwrap_err();
+        assert!(is_too_large(&e), "{kind:?}: {e:#}");
+        assert!(!out.join("zeros.bin").exists(), "{kind:?}: 반쯤 쓴 파일이 남음");
+        // 확인하고 풀기
+        extract(&arc, Some(&out), &Options { limits: strict, allow_large: true, ..Default::default() }).unwrap();
+        assert_eq!(fs::metadata(out.join("zeros.bin")).unwrap().len(), 4 << 20);
+    }
+    // 기본 기준(1 GiB 이상)에서는 정상 파일로 봄
+    let arc = tmp.path().join("bomb.zip");
+    extract(&arc, Some(&tmp.path().join("ok")), &Options::default()).unwrap();
+}
+
+#[test]
+fn trash_after_extract() {
+    let tmp = tempdir().unwrap();
+    let arc = tmp.path().join("지울것.zip");
+    zip_with(&arc, &[("a.txt", "A")]);
+    extract(&arc, Some(&tmp.path().join("out")), &Options::default()).unwrap();
+    match unpack::move_to_trash(&arc) {
+        Ok(()) => assert!(!arc.exists()),
+        // 휴지통이 없는 환경(컨테이너 등)에서는 실패를 알려야 하고 파일은 그대로여야 함
+        Err(e) => {
+            eprintln!("휴지통 사용 불가: {e:#}");
+            assert!(arc.exists());
+        }
     }
 }

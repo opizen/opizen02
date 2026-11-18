@@ -5,10 +5,11 @@
 
 use eframe::egui::{self, RichText};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
-use unpack::{ArchiveKind, CompressStats, compress, default_archive_path};
+use unpack::{ArchiveKind, CompressOptions, CompressStats, Level, Progress, compress_with, default_archive_path, is_cancelled};
 
 const AUTO_CLOSE: Duration = Duration::from_millis(1200);
 
@@ -27,12 +28,16 @@ pub struct PackApp {
     stem: String,
     password: String,
     password2: String,
+    level: Level,
     phase: Phase,
+    progress: Option<Arc<Progress>>,
 }
 
 impl PackApp {
     pub fn new(ctx: &egui::Context, inputs: Vec<PathBuf>, kind: Option<ArchiveKind>) -> Self {
-        let k = kind.unwrap_or(ArchiveKind::Zip);
+        // 형식을 묻는 창은 지난번 설정(형식·수준)으로 시작
+        let saved = crate::settings::Settings::load();
+        let k = kind.unwrap_or(saved.kind);
         let path = default_archive_path(&inputs, k);
         let folder = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -44,7 +49,9 @@ impl PackApp {
             stem,
             password: String::new(),
             password2: String::new(),
+            level: saved.level,
             phase: Phase::Ask,
+            progress: None,
         };
         if kind.is_some() {
             app.start(ctx);
@@ -60,11 +67,18 @@ impl PackApp {
         let inputs = self.inputs.clone();
         let out = self.output();
         let kind = self.kind;
-        let pw = (kind.supports_password() && !self.password.is_empty()).then(|| self.password.clone());
+        let progress = Progress::new();
+        self.progress = Some(progress.clone());
+        let opts = CompressOptions {
+            password: (kind.supports_password() && !self.password.is_empty()).then(|| self.password.clone()),
+            level: self.level,
+            progress: Some(progress),
+        };
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
         thread::spawn(move || {
-            let r = compress(&inputs, &out, kind, pw.as_deref()).map_err(|e| format!("{e:#}"));
+            let r = compress_with(&inputs, &out, kind, &opts)
+                .map_err(|e| if is_cancelled(&e) { "취소했습니다".to_string() } else { format!("{e:#}") });
             let _ = tx.send(r);
             ctx.request_repaint();
         });
@@ -87,6 +101,14 @@ impl PackApp {
             ui.horizontal(|ui| {
                 for k in ArchiveKind::ALL {
                     ui.selectable_value(&mut self.kind, k, k.label());
+                }
+            });
+            ui.end_row();
+
+            ui.label("압축 수준");
+            ui.horizontal(|ui| {
+                for l in Level::ALL {
+                    ui.selectable_value(&mut self.level, l, l.label());
                 }
             });
             ui.end_row();
@@ -172,11 +194,22 @@ impl eframe::App for PackApp {
             Phase::Working(_) => {
                 ui.strong(format!("{} 압축 중…", self.kind.label()));
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(format!("{} → {}", self.summary(), self.output().file_name().unwrap_or_default().to_string_lossy()));
-                });
-                ui.add(egui::ProgressBar::new(0.5).animate(true).desired_height(6.0));
+                ui.label(format!("{} → {}", self.summary(), self.output().file_name().unwrap_or_default().to_string_lossy()));
+                if let Some(p) = self.progress.clone() {
+                    let f = p.fraction().unwrap_or(0.0);
+                    ui.add(egui::ProgressBar::new(f).desired_height(6.0));
+                    ui.horizontal(|ui| {
+                        let name: String = p.current().chars().take(40).collect();
+                        ui.weak(format!("{}%  {name}", (f * 100.0) as u32));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let label = if p.is_cancelled() { "취소하는 중…" } else { "취소" };
+                            if ui.add_enabled(!p.is_cancelled(), egui::Button::new(label).small()).clicked() {
+                                p.cancel();
+                            }
+                        });
+                    });
+                }
+                ctx.request_repaint_after(Duration::from_millis(100));
             }
             Phase::Done(s, at) => {
                 let size = std::fs::metadata(&s.output).map(|m| m.len()).unwrap_or(0);

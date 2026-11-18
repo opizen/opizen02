@@ -117,6 +117,7 @@ ${UnStrStr}
 !macro ForEachExt MACRO
   !insertmacro ${MACRO} "zip"
   !insertmacro ${MACRO} "rar"
+  !insertmacro ${MACRO} "001"
   !insertmacro ${MACRO} "jar"
   !insertmacro ${MACRO} "tbz"
   !insertmacro ${MACRO} "7z"

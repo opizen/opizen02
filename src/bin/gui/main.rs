@@ -19,6 +19,7 @@ mod home;
 mod icons;
 mod pack;
 mod quick;
+mod settings;
 mod style;
 mod table;
 
@@ -87,7 +88,7 @@ fn main() -> eframe::Result {
             let tag = kind.map(|k| k.label()).unwrap_or("ASK");
             // 다른 프로세스가 모아서 처리하면 이 프로세스는 조용히 끝냄
             let Some(files) = gather::gather(tag, files) else { return Ok(()) };
-            let size = if kind.is_some() { [460.0, 190.0] } else { [520.0, 290.0] };
+            let size = if kind.is_some() { [460.0, 200.0] } else { [520.0, 330.0] };
             return eframe::run_native(
                 unpack::APP_NAME,
                 small_window(size),
@@ -100,6 +101,7 @@ fn main() -> eframe::Result {
         _ => {}
     }
     let auto = matches!(launch, Launch::Main { auto: true });
+    clean_old_temp();
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(unpack::APP_NAME)
@@ -184,4 +186,40 @@ fn open_in_explorer(path: &Path) {
         .arg(if path.is_file() { path.parent().unwrap_or(path) } else { path })
         .spawn();
     let _ = cmd;
+}
+
+/// 파일을 운영체제 기본 프로그램으로 열기 (압축 파일 안 파일 열기용)
+fn open_with_default(path: &Path) {
+    #[cfg(windows)]
+    let cmd = std::process::Command::new("explorer").arg(path).spawn();
+    #[cfg(target_os = "macos")]
+    let cmd = std::process::Command::new("open").arg(path).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let cmd = std::process::Command::new("xdg-open").arg(path).spawn();
+    let _ = cmd;
+}
+
+/// 현지 시각 "2024-05-01 13:20"
+fn fmt_time(t: std::time::SystemTime) -> String {
+    let utc = time::OffsetDateTime::from(t);
+    let local = time::UtcOffset::current_local_offset().map(|o| utc.to_offset(o)).unwrap_or(utc);
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", local.year(), local.month() as u8, local.day(), local.hour(), local.minute())
+}
+
+/// 지난번에 파일을 열면서 만든 임시 폴더 중 하루 지난 것 지우기
+fn clean_old_temp() {
+    let base = std::env::temp_dir().join(unpack::APP_NAME);
+    let Ok(rd) = std::fs::read_dir(&base) else { return };
+    for e in rd.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() > 86_400);
+        if old && e.file_name().to_string_lossy().starts_with("open-") {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+/// 압축 파일 안 파일을 열 때 쓰는 임시 폴더 (프로그램마다 따로, 열 때마다 새로)
+fn open_temp_dir() -> std::path::PathBuf {
+    let base = std::env::temp_dir().join(unpack::APP_NAME).join(format!("open-{}", std::process::id()));
+    (0..).map(|n| base.join(n.to_string())).find(|p| !p.exists()).expect("무한 반복자")
 }

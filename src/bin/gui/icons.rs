@@ -15,6 +15,8 @@ pub enum Icon {
     Lock,
     Up,
     Back,
+    /// 검사 (방패 + 체크)
+    Check,
 }
 
 /// 폴더 아이콘 색 (파일 관리자에서 흔히 쓰는 노란색)
@@ -111,6 +113,12 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Up => {
             p.line_segment([at(12.0, 20.0), at(12.0, 5.0)], line);
             p.add(Shape::line(vec![at(6.0, 11.0), at(12.0, 5.0), at(18.0, 11.0)], line));
+        }
+        Icon::Check => {
+            // 방패
+            let shield = vec![at(12.0, 2.0), at(20.0, 5.0), at(19.0, 14.0), at(12.0, 22.0), at(5.0, 14.0), at(4.0, 5.0)];
+            p.add(Shape::convex_polygon(shield, color.gamma_multiply(0.12), line));
+            p.add(Shape::line(vec![at(8.0, 12.0), at(11.0, 15.0), at(16.5, 9.0)], line));
         }
         Icon::Back => {
             p.add(Shape::line(vec![at(15.0, 5.0), at(8.0, 12.0), at(15.0, 19.0)], line));

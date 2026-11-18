@@ -12,7 +12,7 @@ from gi.repository import GObject, Nautilus
 
 APP = "opizenAI_Unpack"
 ARCHIVE_EXT = (
-    ".zip", ".jar", ".7z", ".rar", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tbz",
+    ".zip", ".jar", ".7z", ".rar", ".001", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tbz",
     ".tar.xz", ".txz", ".tar.zst", ".tzst", ".gz", ".bz2", ".xz", ".zst",
 )
 

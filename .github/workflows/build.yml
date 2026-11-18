@@ -11,12 +11,31 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  linux:
     # 22.04에서 빌드해야 오래된 배포판(glibc 2.35+)에서도 Linux 실행 파일이 동작합니다.
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - name: Rust 준비
+        run: |
+          rustup update stable
+          rustup default stable
+      - name: 테스트
+        run: cargo test --features gui
+      - name: Linux 패키지 빌드 (.deb, .tar.gz)
+        run: ./build-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opizenAI_Unpack-Linux
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
 
+  windows:
+    # RAR(UnRAR) C++ 코드를 링크하려면 새 MinGW가 필요합니다 (22.04의 MinGW는 __mingwthr_key_dtor 오류).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
       - name: 도구 설치
         run: |
           sudo apt-get update
@@ -24,32 +43,23 @@ jobs:
           rustup update stable
           rustup default stable
           rustup target add x86_64-pc-windows-gnu
-
-      - name: 테스트
-        run: cargo test
-
       - name: Windows 설치 파일 빌드
         run: ./build-windows.sh
-
-      - name: Linux 패키지 빌드 (.deb, .tar.gz)
-        run: ./build-linux.sh
-
-      - name: 아티팩트 업로드 (Windows)
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: opizenAI_Unpack-Windows
           path: dist/*.exe
 
-      - name: 아티팩트 업로드 (Linux)
-        uses: actions/upload-artifact@v4
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          name: opizenAI_Unpack-Linux
-          path: |
-            dist/*.deb
-            dist/*.tar.gz
-
+          path: dist
+          merge-multiple: true
       - name: 릴리스 생성 (v* 태그)
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |

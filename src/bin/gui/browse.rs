@@ -1,12 +1,17 @@
 //! 압축 파일 내용 보기 — 창 전체에 폴더 구조로 보여 줍니다.
+//!
+//! - 폴더 더블클릭(Enter): 들어가기 / Backspace: 위로
+//! - 파일 더블클릭: 임시 폴더에 풀어서 기본 프로그램으로 열기
+//! - Ctrl·Shift + 클릭: 여러 개 선택 → 도구 모음의 압축 풀기가 "선택 항목 풀기"가 됨
 
 use crate::icons::{self, Icon};
 use crate::style::ACCENT;
 use crate::table::{self, Col};
 use eframe::egui;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use unpack::{EntryInfo, Options, detect, is_password_error, list};
+use std::time::SystemTime;
+use unpack::{EntryInfo, Options, Selection, detect, is_password_error, list};
 
 /// 현재 폴더 안의 한 항목
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +22,8 @@ pub struct Node {
     pub size: u64,
     /// 폴더 안 파일 수 (파일이면 0)
     pub files: usize,
+    /// 수정 시간 (폴더면 안에서 가장 최근)
+    pub modified: Option<SystemTime>,
 }
 
 /// `entries` 중 `cur` 폴더 바로 아래 항목들 (폴더 먼저, 이름순)
@@ -31,8 +38,9 @@ pub fn children(entries: &[EntryInfo], cur: &[String]) -> Vec<Node> {
         let child = segs[cur.len()].to_string();
         let deeper = segs.len() > cur.len() + 1;
         let is_dir = deeper || e.is_dir;
-        let node = map.entry(child.clone()).or_insert(Node { name: child, is_dir, size: 0, files: 0 });
+        let node = map.entry(child.clone()).or_insert(Node { name: child, is_dir, size: 0, files: 0, modified: None });
         node.is_dir |= is_dir;
+        node.modified = node.modified.max(e.modified);
         if !e.is_dir {
             node.size += e.size;
             if node.is_dir {
@@ -51,6 +59,17 @@ pub enum Contents {
     Failed(String),
 }
 
+/// 표에서 일어난 일 (Home이 처리)
+pub enum ViewAction {
+    None,
+    /// 암호를 넣고 다시 열기
+    Retry,
+    /// 이 파일(압축 파일 안 전체 경로)을 기본 프로그램으로 열기
+    Open(String),
+    /// 선택한 항목 풀기 (`true`면 위치 고르기)
+    ExtractSelected { choose: bool },
+}
+
 pub struct ArchiveView {
     /// Home 목록에서의 위치
     pub idx: usize,
@@ -61,15 +80,29 @@ pub struct ArchiveView {
     cur: Vec<String>,
     /// 암호 칸에 한 번만 포커스 주기
     focus_password: bool,
-    selected: Option<String>,
+    /// 현재 폴더에서 고른 항목 이름들
+    selected: BTreeSet<String>,
+    /// Shift 선택 기준
+    anchor: Option<String>,
     sort: table::Sort,
 }
 
 impl ArchiveView {
     pub fn open(idx: usize, path: &Path, password: Option<String>) -> Self {
         let format = detect(path).map(|f| f.to_string().to_uppercase()).unwrap_or_default();
-        let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        let mut v = Self { idx, path: path.to_path_buf(), format, file_size, contents: Contents::Ok(Vec::new()), cur: Vec::new(), focus_password: false, selected: None, sort: (0, true) };
+        let file_size = unpack::archive_parts(path).iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
+        let mut v = Self {
+            idx,
+            path: path.to_path_buf(),
+            format,
+            file_size,
+            contents: Contents::Ok(Vec::new()),
+            cur: Vec::new(),
+            focus_password: false,
+            selected: BTreeSet::new(),
+            anchor: None,
+            sort: (0, true),
+        };
         v.reload(password);
         v
     }
@@ -96,7 +129,30 @@ impl ArchiveView {
 
     pub fn go_up(&mut self) {
         self.cur.pop();
-        self.selected = None;
+        self.clear_selection();
+    }
+
+    fn clear_selection(&mut self) {
+        self.selected.clear();
+        self.anchor = None;
+    }
+
+    pub fn has_selection(&self) -> bool {
+        !self.selected.is_empty()
+    }
+
+    fn full(&self, name: &str) -> String {
+        let mut segs = self.cur.clone();
+        segs.push(name.to_string());
+        segs.join("/")
+    }
+
+    /// 고른 항목 → 라이브러리 선택 (지금 보는 폴더 기준 경로로 풀림)
+    pub fn selection(&self) -> Option<Selection> {
+        self.has_selection().then(|| Selection {
+            prefix: self.cur.join("/"),
+            names: self.selected.iter().map(|n| self.full(n)).collect(),
+        })
     }
 
     /// 상태 표시줄 문구
@@ -105,8 +161,9 @@ impl ArchiveView {
             Contents::Ok(e) => {
                 let files = e.iter().filter(|x| !x.is_dir).count();
                 let total: u64 = e.iter().map(|x| x.size).sum();
+                let sel = if self.selected.is_empty() { String::new() } else { format!(" · {}개 선택", self.selected.len()) };
                 format!(
-                    "{} · 파일 {}개 · 풀면 {} · 압축 파일 {}",
+                    "{} · 파일 {}개 · 풀면 {} · 압축 파일 {}{sel}",
                     self.format,
                     files,
                     crate::human_size(total),
@@ -139,13 +196,13 @@ impl ArchiveView {
         }
         if let Some(n) = go {
             self.cur.truncate(n);
-            self.selected = None;
+            self.clear_selection();
         }
     }
 
-    /// 내용 표. 암호가 필요하면 입력 화면을 보여 주고, 다시 열어야 하면 `true`.
-    pub fn table_ui(&mut self, ui: &mut egui::Ui, password: &mut String) -> bool {
-        let mut retry = false;
+    /// 내용 표
+    pub fn table_ui(&mut self, ui: &mut egui::Ui, password: &mut String) -> ViewAction {
+        let mut action = ViewAction::None;
         match &self.contents {
             Contents::Failed(e) => {
                 let rect = ui.available_rect_before_wrap();
@@ -173,7 +230,7 @@ impl ArchiveView {
                     if (ui.add_enabled(!password.is_empty(), crate::style::primary("열기")).clicked() || enter)
                         && !password.is_empty()
                     {
-                        retry = true;
+                        action = ViewAction::Retry;
                     }
                 });
             }
@@ -182,12 +239,14 @@ impl ArchiveView {
                 sort_nodes(&mut nodes, self.sort);
                 let cols = [
                     Col { title: "이름", width: 0.0, right: false },
-                    Col { title: "크기", width: 110.0, right: true },
-                    Col { title: "종류", width: 120.0, right: false },
+                    Col { title: "크기", width: 100.0, right: true },
+                    Col { title: "종류", width: 110.0, right: false },
+                    Col { title: "수정한 날짜", width: 140.0, right: false },
                 ];
                 table::header(ui, &cols, &mut self.sort);
                 let mut enter = None;
                 let mut up = false;
+                let mods = ui.input(|i| i.modifiers);
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     if !self.cur.is_empty() {
@@ -197,46 +256,114 @@ impl ArchiveView {
                         }
                     }
                     for (i, n) in nodes.iter().enumerate() {
-                        let (icon, size, kind) = if n.is_dir {
-                            (Icon::Folder, crate::human_size(n.size), format!("폴더 · {}개", n.files))
+                        let (icon, kind) = if n.is_dir {
+                            (Icon::Folder, format!("폴더 · {}개", n.files))
                         } else {
-                            (Icon::File, crate::human_size(n.size), kind_of(&n.name))
+                            (Icon::File, kind_of(&n.name))
                         };
-                        let sel = self.selected.as_deref() == Some(n.name.as_str());
-                        let r = table::row(ui, &cols, icon, &[(n.name.clone(), None), (size, None), (kind, None)], sel, i + usize::from(!self.cur.is_empty()));
+                        let date = n.modified.map(crate::fmt_time).unwrap_or_default();
+                        let sel = self.selected.contains(&n.name);
+                        let cells = [(n.name.clone(), None), (crate::human_size(n.size), None), (kind, None), (date, None)];
+                        let r = table::row(ui, &cols, icon, &cells, sel, i + usize::from(!self.cur.is_empty()));
                         if r.clicked() {
-                            self.selected = Some(n.name.clone());
+                            self.click(&nodes, &n.name, mods);
                         }
-                        if r.double_clicked() && n.is_dir {
-                            enter = Some(n.name.clone());
+                        if r.secondary_clicked() && !sel {
+                            self.clear_selection();
+                            self.selected.insert(n.name.clone());
+                            self.anchor = Some(n.name.clone());
                         }
+                        if r.double_clicked() {
+                            if n.is_dir {
+                                enter = Some(n.name.clone());
+                            } else {
+                                action = ViewAction::Open(self.full(&n.name));
+                            }
+                        }
+                        r.context_menu(|ui| {
+                            if !n.is_dir && ui.button("열기").clicked() {
+                                action = ViewAction::Open(self.full(&n.name));
+                                ui.close();
+                            }
+                            if n.is_dir && ui.button("폴더 열기").clicked() {
+                                enter = Some(n.name.clone());
+                                ui.close();
+                            }
+                            ui.separator();
+                            let label = format!("선택한 {}개 풀기", self.selected.len().max(1));
+                            if ui.button(label).clicked() {
+                                action = ViewAction::ExtractSelected { choose: false };
+                                ui.close();
+                            }
+                            if ui.button("선택한 항목을 다른 위치에 풀기…").clicked() {
+                                action = ViewAction::ExtractSelected { choose: true };
+                                ui.close();
+                            }
+                        });
                     }
                     if nodes.is_empty() {
                         ui.add_space(20.0);
                         ui.vertical_centered(|ui| ui.weak("비어 있는 폴더입니다"));
                     }
                 });
-                // 키보드: Backspace 위로, Enter 선택한 폴더 열기
-                let (back, open) = ui.input(|i| (i.key_pressed(egui::Key::Backspace), i.key_pressed(egui::Key::Enter)));
+                // 키보드: Backspace 위로, Enter 열기, Esc 선택 해제, Ctrl+A 모두 선택
+                let (back, open, esc, all) = ui.input(|i| {
+                    (
+                        i.key_pressed(egui::Key::Backspace),
+                        i.key_pressed(egui::Key::Enter),
+                        i.key_pressed(egui::Key::Escape),
+                        i.modifiers.command && i.key_pressed(egui::Key::A),
+                    )
+                });
                 if back && !self.cur.is_empty() {
                     up = true;
                 }
-                if open
-                    && let Some(sel) = &self.selected
-                    && nodes.iter().any(|n| &n.name == sel && n.is_dir)
-                {
-                    enter = Some(sel.clone());
+                if esc {
+                    self.clear_selection();
+                }
+                if all {
+                    self.selected = nodes.iter().map(|n| n.name.clone()).collect();
+                }
+                if open && self.selected.len() == 1 {
+                    let name = self.selected.iter().next().cloned().unwrap_or_default();
+                    match nodes.iter().find(|n| n.name == name) {
+                        Some(n) if n.is_dir => enter = Some(name),
+                        Some(_) => action = ViewAction::Open(self.full(&name)),
+                        None => {}
+                    }
                 }
                 if up {
                     self.go_up();
                 }
                 if let Some(d) = enter {
                     self.cur.push(d);
-                    self.selected = None;
+                    self.clear_selection();
                 }
             }
         }
-        retry
+        action
+    }
+
+    /// 클릭: 그냥 누르면 하나만, Ctrl은 추가/빼기, Shift는 범위
+    fn click(&mut self, nodes: &[Node], name: &str, mods: egui::Modifiers) {
+        if mods.command {
+            if !self.selected.remove(name) {
+                self.selected.insert(name.to_string());
+            }
+            self.anchor = Some(name.to_string());
+        } else if mods.shift
+            && let Some(a) = &self.anchor
+        {
+            let pos = |n: &str| nodes.iter().position(|x| x.name == n);
+            if let (Some(i), Some(j)) = (pos(a), pos(name)) {
+                let (lo, hi) = (i.min(j), i.max(j));
+                self.selected = nodes[lo..=hi].iter().map(|n| n.name.clone()).collect();
+            }
+        } else {
+            self.clear_selection();
+            self.selected.insert(name.to_string());
+            self.anchor = Some(name.to_string());
+        }
     }
 }
 
@@ -246,6 +373,7 @@ fn sort_nodes(nodes: &mut [Node], (col, asc): table::Sort) {
         let ord = match col {
             1 => a.size.cmp(&b.size),
             2 => kind_of(&a.name).cmp(&kind_of(&b.name)),
+            3 => a.modified.cmp(&b.modified),
             _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         };
         dirs.then(if asc { ord } else { ord.reverse() })
@@ -265,7 +393,7 @@ mod tests {
     use super::*;
 
     fn e(name: &str, size: u64, is_dir: bool) -> EntryInfo {
-        EntryInfo { name: name.into(), size, is_dir }
+        EntryInfo { name: name.into(), size, is_dir, modified: None }
     }
 
     #[test]

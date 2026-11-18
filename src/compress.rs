@@ -117,16 +117,59 @@ fn unique_archive_path(path: &Path, kind: ArchiveKind) -> PathBuf {
         .expect("무한 반복자")
 }
 
+/// 압축 수준
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Level {
+    /// 빠르게 (압축률 낮음)
+    Fast,
+    #[default]
+    Normal,
+    /// 최대 압축 (느림)
+    Best,
+}
+
+impl Level {
+    pub const ALL: [Level; 3] = [Level::Fast, Level::Normal, Level::Best];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Level::Fast => "빠르게",
+            Level::Normal => "보통",
+            Level::Best => "최대",
+        }
+    }
+
+    /// 1 / 6 / 9 (zip, gzip, xz, 7z 공통 단계)
+    fn number(self) -> u32 {
+        match self {
+            Level::Fast => 1,
+            Level::Normal => 6,
+            Level::Best => 9,
+        }
+    }
+}
+
+/// 압축 옵션
+#[derive(Debug, Clone, Default)]
+pub struct CompressOptions {
+    /// 암호 (zip, 7z — AES-256)
+    pub password: Option<String>,
+    pub level: Level,
+    /// 진행률 / 취소
+    pub progress: Option<std::sync::Arc<crate::Progress>>,
+}
+
+/// `inputs`(파일·폴더)를 `output`으로 압축합니다 (보통 수준). [`compress_with`] 참고.
+pub fn compress(inputs: &[PathBuf], output: &Path, kind: ArchiveKind, password: Option<&str>) -> Result<CompressStats> {
+    compress_with(inputs, output, kind, &CompressOptions { password: password.map(str::to_owned), ..Default::default() })
+}
+
 /// `inputs`(파일·폴더)를 `output`으로 압축합니다. 형식은 `kind`를 따릅니다.
 ///
-/// 임시 파일(`*.part`)에 쓴 뒤 성공하면 이름을 바꾸므로, 실패해도 반쯤 만들어진
+/// 임시 파일(`*.part`)에 쓴 뒤 성공하면 이름을 바꾸므로, 실패하거나 취소해도 반쯤 만들어진
 /// 압축 파일이 남지 않습니다.
-pub fn compress(
-    inputs: &[PathBuf],
-    output: &Path,
-    kind: ArchiveKind,
-    password: Option<&str>,
-) -> Result<CompressStats> {
+pub fn compress_with(inputs: &[PathBuf], output: &Path, kind: ArchiveKind, opts: &CompressOptions) -> Result<CompressStats> {
+    let password = opts.password.as_deref();
     if inputs.is_empty() {
         bail!("압축할 파일이 없습니다");
     }
@@ -148,24 +191,35 @@ pub fn compress(
         collect(input, name, &output_abs, &mut entries, &mut stats)?;
     }
 
+    if let Some(p) = &opts.progress {
+        let total: u64 = entries.iter().filter(|e| !e.is_dir).filter_map(|e| fs::metadata(&e.path).ok()).map(|m| m.len()).sum();
+        p.reset(total);
+    }
+    let level = opts.level.number();
+    let progress = opts.progress.clone();
+
     let part = output.with_file_name(format!(
         "{}.part",
         output.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
     ));
     let result = match kind {
-        ArchiveKind::Zip => write_zip(&entries, &part, password, &mut stats),
-        ArchiveKind::SevenZ => write_7z(&entries, &part, password, &mut stats),
+        ArchiveKind::Zip => write_zip(&entries, &part, password, level, &progress, &mut stats),
+        ArchiveKind::SevenZ => write_7z(&entries, &part, password, level, &progress, &mut stats),
         ArchiveKind::TarGz => {
-            let w = flate2::write::GzEncoder::new(create(&part)?, flate2::Compression::default());
-            write_tar(&entries, w, &mut stats).and_then(|w| Ok(w.finish()?.flush()?))
+            let w = flate2::write::GzEncoder::new(create(&part)?, flate2::Compression::new(level));
+            write_tar(&entries, w, &progress, &mut stats).and_then(|w| Ok(w.finish()?.flush()?))
         }
         ArchiveKind::TarXz => {
-            let w = xz2::write::XzEncoder::new(create(&part)?, 6);
-            write_tar(&entries, w, &mut stats).and_then(|w| Ok(w.finish()?.flush()?))
+            let w = xz2::write::XzEncoder::new(create(&part)?, level);
+            write_tar(&entries, w, &progress, &mut stats).and_then(|w| Ok(w.finish()?.flush()?))
         }
     };
     if let Err(e) = result {
         let _ = fs::remove_file(&part);
+        // 라이브러리가 오류를 글자로 바꿔 버려도 취소였다면 취소로 알림
+        if opts.progress.as_ref().is_some_and(|p| p.is_cancelled()) && !crate::is_cancelled(&e) {
+            return Err(e.context(crate::Cancelled));
+        }
         return Err(e);
     }
     fs::rename(&part, output).with_context(|| format!("저장 실패: {}", output.display()))?;
@@ -239,11 +293,24 @@ fn unix_mode(_: &Path) -> Option<u32> {
     None
 }
 
-fn write_zip(entries: &[Entry], part: &Path, password: Option<&str>, stats: &mut CompressStats) -> Result<()> {
+type Prog = Option<std::sync::Arc<crate::Progress>>;
+
+/// 원본 파일을 읽으면서 진행률을 더하고 취소를 확인
+fn source(path: &Path, progress: &Prog) -> Result<crate::Counted<File>> {
+    if let Some(p) = progress {
+        p.set_current(&path.file_name().unwrap_or_default().to_string_lossy());
+    }
+    let f = File::open(path).with_context(|| format!("열 수 없음: {}", path.display()))?;
+    Ok(crate::Counted { inner: f, progress: progress.clone() })
+}
+
+fn write_zip(entries: &[Entry], part: &Path, password: Option<&str>, level: u32, progress: &Prog, stats: &mut CompressStats) -> Result<()> {
     use zip::write::SimpleFileOptions;
     let mut zip = zip::ZipWriter::new(create(part)?);
     for e in entries {
-        let mut opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let mut opts = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .compression_level(Some(level as i64));
         if let Some(t) = zip_time(&e.path) {
             opts = opts.last_modified_time(t);
         }
@@ -261,7 +328,7 @@ fn write_zip(entries: &[Entry], part: &Path, password: Option<&str>, stats: &mut
             opts = opts.with_aes_encryption(zip::AesMode::Aes256, pw);
         }
         zip.start_file(e.name.as_str(), opts)?;
-        let mut f = File::open(&e.path).with_context(|| format!("열 수 없음: {}", e.path.display()))?;
+        let mut f = source(&e.path, progress)?;
         stats.bytes += io::copy(&mut f, &mut zip)?;
         stats.files += 1;
     }
@@ -269,12 +336,18 @@ fn write_zip(entries: &[Entry], part: &Path, password: Option<&str>, stats: &mut
     Ok(())
 }
 
-fn write_7z(entries: &[Entry], part: &Path, password: Option<&str>, stats: &mut CompressStats) -> Result<()> {
-    use sevenz_rust2::{ArchiveEntry, ArchiveWriter, EncoderMethod, Password, encoder_options::AesEncoderOptions};
+fn write_7z(entries: &[Entry], part: &Path, password: Option<&str>, level: u32, progress: &Prog, stats: &mut CompressStats) -> Result<()> {
+    use sevenz_rust2::{
+        ArchiveEntry, ArchiveWriter, Password,
+        encoder_options::{AesEncoderOptions, Lzma2Options},
+    };
     let mut w = ArchiveWriter::new(create(part)?).map_err(|e| anyhow::anyhow!("7z 만들기 실패: {e}"))?;
+    let lzma = Lzma2Options::from_level(level).into();
     if let Some(pw) = password {
-        w.set_content_methods(vec![AesEncoderOptions::new(Password::from(pw)).into(), EncoderMethod::LZMA2.into()]);
+        w.set_content_methods(vec![AesEncoderOptions::new(Password::from(pw)).into(), lzma]);
         w.set_encrypt_header(true);
+    } else {
+        w.set_content_methods(vec![lzma]);
     }
     for e in entries {
         let entry = ArchiveEntry::from_path(&e.path, e.name.clone());
@@ -282,7 +355,7 @@ fn write_7z(entries: &[Entry], part: &Path, password: Option<&str>, stats: &mut 
             w.push_archive_entry::<File>(entry, None).map_err(|x| anyhow::anyhow!("7z 쓰기 실패: {x}"))?;
             stats.dirs += 1;
         } else {
-            let f = File::open(&e.path).with_context(|| format!("열 수 없음: {}", e.path.display()))?;
+            let f = source(&e.path, progress)?;
             let pushed = w
                 .push_archive_entry(entry, Some(f))
                 .map_err(|x| anyhow::anyhow!("7z 쓰기 실패: {}: {x}", e.name))?;
@@ -294,17 +367,23 @@ fn write_7z(entries: &[Entry], part: &Path, password: Option<&str>, stats: &mut 
     Ok(())
 }
 
-fn write_tar<W: Write>(entries: &[Entry], w: W, stats: &mut CompressStats) -> Result<W> {
+fn write_tar<W: Write>(entries: &[Entry], w: W, progress: &Prog, stats: &mut CompressStats) -> Result<W> {
     let mut b = tar::Builder::new(w);
     b.follow_symlinks(false);
     for e in entries {
-        b.append_path_with_name(&e.path, &e.name)
-            .with_context(|| format!("추가 실패: {}", e.path.display()))?;
         if e.is_dir {
+            b.append_path_with_name(&e.path, &e.name).with_context(|| format!("추가 실패: {}", e.path.display()))?;
             stats.dirs += 1;
         } else {
+            // 진행률·취소를 위해 파일 내용은 직접 읽어 넣음 (권한·수정 시간은 그대로)
+            let meta = fs::metadata(&e.path).with_context(|| format!("읽을 수 없음: {}", e.path.display()))?;
+            let mut header = tar::Header::new_gnu();
+            header.set_metadata(&meta);
+            header.set_size(meta.len());
+            b.append_data(&mut header, &e.name, source(&e.path, progress)?)
+                .with_context(|| format!("추가 실패: {}", e.path.display()))?;
             stats.files += 1;
-            stats.bytes += fs::metadata(&e.path).map(|m| m.len()).unwrap_or(0);
+            stats.bytes += meta.len();
         }
     }
     Ok(b.into_inner()?)
